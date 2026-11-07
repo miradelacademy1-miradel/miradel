@@ -1,0 +1,80 @@
+name: 2) Android APK yigʻish
+
+# Ishga tushirish: Actions → "2) Android APK yigʻish" → Run workflow.
+# (Repo ichki papka tuzilmasi uchun: loyiha miradel-crm/ papkasida.)
+# Kerak: Settings → Secrets and variables → Actions → Variables: API_BASE = https://sizning-domen.up.railway.app
+# Imzo kaliti Secrets da boʻlsa — rasmiy APK (miradel.apk), boʻlmasa — faqat SINOV APK (miradel-test.apk, prerelease).
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    env:
+      API_BASE: ${{ vars.API_BASE }}
+      APP_VERSION: ${{ github.run_number }}
+      VERSION_CODE: ${{ github.run_number }}
+      KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+
+      - name: Veb fayllarni tayyorlash
+        working-directory: miradel-crm/mobile
+        run: |
+          npm install --no-audit --no-fund
+          node scripts/build-web.js
+
+      - name: Android loyihasini yaratish
+        working-directory: miradel-crm/mobile
+        run: |
+          npx cap add android
+          npx cap sync android
+          pip install pillow
+          python3 scripts/patch-android.py
+
+      - name: APK yigʻish (imzosiz)
+        working-directory: miradel-crm/mobile/android
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: Imzolash
+        run: |
+          set -e
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          UNSIGNED=$(ls miradel-crm/mobile/android/app/build/outputs/apk/release/*.apk | head -1)
+          "$BT/zipalign" -p -f 4 "$UNSIGNED" aligned.apk
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > release.jks
+            "$BT/apksigner" sign --ks release.jks --ks-pass env:KEYSTORE_PASSWORD --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD --out miradel.apk aligned.apk
+            echo "OUT=miradel.apk" >> "$GITHUB_ENV"; echo "PRE=false" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Imzo kaliti topilmadi: SINOV APK yaratiladi (keyin rasmiy APK ustiga yangilanmaydi)."
+            keytool -genkeypair -keystore test.jks -alias test -keyalg RSA -keysize 2048 -validity 365 -storepass testpass123 -keypass testpass123 -dname "CN=Miradel Test" 2>/dev/null
+            "$BT/apksigner" sign --ks test.jks --ks-pass pass:testpass123 --ks-key-alias test --key-pass pass:testpass123 --out miradel-test.apk aligned.apk
+            echo "OUT=miradel-test.apk" >> "$GITHUB_ENV"; echo "PRE=true" >> "$GITHUB_ENV"
+          fi
+          "$BT/apksigner" verify --print-certs "$(grep OUT= "$GITHUB_ENV" | cut -d= -f2)" | head -3
+
+      - name: Release yaratish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Miradel ${{ github.run_number }}
+          prerelease: ${{ env.PRE == 'true' }}
+          files: ${{ env.OUT }}
+          body: "Miradel Academy Android ilovasi, build ${{ github.run_number }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: ${{ env.OUT }}
+          retention-days: 14
