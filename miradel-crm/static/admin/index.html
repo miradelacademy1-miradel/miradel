@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Miradel — admin paneli</title>
+<style>
+:root{--bg:#d9dadb;--card:#eceded;--ink:#1d1f22;--mute:#6a6e73;--line:#c5c7c9;--acc:#2b2e33;--accink:#f1f2f2;--ok:#2f9e5b;--bad:#d6453d;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root{--bg:#141618;--card:#1f2225;--ink:#eceeef;--mute:#9a9fa4;--line:#33373b;--acc:#e3e5e6;--accink:#17191b}}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 14.5px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+button,input,select{font:inherit;color:inherit}button{cursor:pointer;border:0}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+#pc{display:none}
+.wrap{max-width:1000px;margin:0 auto;padding:16px}
+.top{display:flex;align-items:center;gap:12px;margin-bottom:14px}.top h1{font-size:20px;margin:0;flex:1}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.tabs button{background:var(--card);color:var(--mute);padding:9px 16px;border-radius:12px;font-weight:600}
+.tabs button.on{background:var(--acc);color:var(--accink)}
+.card{background:var(--card);border-radius:18px;padding:16px;margin-bottom:14px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--mute);flex:1;min-width:140px}
+input,select,textarea{font:inherit;color:inherit;background:var(--bg);border:1.5px solid var(--line);border-radius:12px;padding:9px 12px;width:100%}
+input[type=checkbox]{width:auto}
+.btn{background:var(--acc);color:var(--accink);padding:10px 16px;border-radius:12px;font-weight:600}
+.btn.g{background:var(--line);color:var(--ink);padding:6px 12px;font-size:13px}
+.sc{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;color:var(--mute);font-weight:600;font-size:13px;padding:8px 10px;border-bottom:1px solid var(--line)}
+td{padding:9px 10px;border-bottom:1px solid var(--line)}tr:last-child td{border:0}
+.off{opacity:.5}
+.lcard{width:330px;max-width:100%;border-radius:18px;padding:18px;background:var(--acc);color:var(--accink);margin:12px 0}
+.lcard code{display:block;font:600 19px/1.3 ui-monospace,Menlo,Consolas,monospace}.lcard small{opacity:.8;display:block;margin-top:8px}
+#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--acc);color:var(--accink);padding:10px 18px;border-radius:14px;opacity:0;pointer-events:none;transition:opacity .25s;max-width:90vw}
+#toast.on{opacity:1}
+#login{max-width:340px;margin:12vh auto}
+@media print{.noprint{display:none!important}#pc{display:block!important}#pc .lcard{margin:0;border:2px solid #000;background:#fff;color:#000}}
+</style>
+</head>
+<body>
+<div class="noprint">
+<div id="login" class="wrap"><div class="card"><h1 style="font-size:20px;margin:0 0 12px">Miradel admin</h1>
+<label>Login<input id="lg" autocomplete="username" autocapitalize="none"></label><br>
+<label>Parol<input id="pw" type="password" autocomplete="current-password"></label><br>
+<button class="btn" id="go" style="width:100%">Kirish</button></div></div>
+<div id="main" class="wrap" hidden>
+ <div class="top"><h1>Miradel boshqaruv</h1><span id="me" style="color:var(--mute)"></span><a class="btn g" href="/app/manager.html" style="text-decoration:none">Menejer paneli</a><button class="btn g" id="out">Chiqish</button></div>
+ <div class="tabs" id="tabs"><button data-t="stu" class="on">Oʻquvchilar</button><button data-t="stf">Xodimlar</button><button data-t="grp">Guruhlar</button><button data-t="tsk">Topshiriqlar</button><button data-t="ann">Eʼlonlar</button><button data-t="art">Artifaktlar</button><button data-t="cht">Chat nazorati</button></div>
+ <div id="v"></div>
+</div>
+</div>
+<div id="pc"></div>
+<div id="toast" role="status"></div>
+<script>
+(function(){
+var $=function(s){return document.querySelector(s)};
+var T=localStorage.getItem("mt")||"",tab="stu",G=[],STF=[],last=null;
+function esc(s){var d=document.createElement("div");d.textContent=s==null?"":s;return d.innerHTML}
+function toast(t){var e=$("#toast");e.textContent=t;e.classList.add("on");clearTimeout(toast.x);toast.x=setTimeout(function(){e.classList.remove("on")},2600)}
+function api(p,o){o=o||{};var h={"Content-Type":"application/json"};if(T)h.Authorization="Bearer "+T;
+ return fetch("/api"+p,{method:o.method||"GET",headers:h,body:o.body?JSON.stringify(o.body):undefined}).then(function(r){
+  return r.json().catch(function(){return null}).then(function(d){
+   if(r.status===401&&p!=="/auth/login"){logout();throw new Error("Sessiya tugadi, qayta kiring")}
+   if(!r.ok)throw new Error(d&&typeof d.detail==="string"?d.detail:"Maʼlumot notoʻgʻri ("+r.status+")");return d})})}
+function fail(e){toast(e.message||"Xatolik")}
+function logout(){T="";localStorage.removeItem("mt");$("#main").hidden=true;$("#login").hidden=false}
+function start(u){$("#login").hidden=true;$("#main").hidden=false;$("#me").textContent=u.full_name;show()}
+$("#go").onclick=function(){api("/auth/login",{method:"POST",body:{login:$("#lg").value,password:$("#pw").value}}).then(function(d){
+ if(!d.user.is_admin){toast("Bu panel faqat admin uchun");return}T=d.token;localStorage.setItem("mt",T);$("#pw").value="";start(d.user)}).catch(fail)};
+$("#pw").onkeydown=function(e){if(e.key==="Enter")$("#go").click()};
+$("#out").onclick=logout;
+$("#tabs").onclick=function(e){var b=e.target.closest("button");if(!b)return;tab=b.dataset.t;last=null;document.querySelectorAll("#tabs button").forEach(function(x){x.classList.toggle("on",x===b)});show()};
+function opts(list,sel,empty){return '<option value="">'+empty+"</option>"+list.map(function(g){return '<option value="'+g.id+'"'+(g.id===sel?" selected":"")+">"+esc(g.name||g.full_name)+"</option>"}).join("")}
+function card(u,pwd){var h='<div class="lcard"><b>Miradel Academy</b><small>'+esc(u.full_name)+'</small><small>Login</small><code>'+esc(u.login)+'</code><small>Parol</small><code>'+esc(pwd)+'</code><small>Parolni hech kimga bermang. Ilova: sayt manzili yoki APK</small></div>';$("#pc").innerHTML=h;return h+'<p><button class="btn" id="prn">Kartochkani chop etish</button> <small style="color:var(--mute)">Parol faqat hozir koʻrinadi</small></p>'}
+function bindCard(){var p=$("#prn");if(p)p.onclick=function(){window.print()}}
+function show(){Promise.all([api("/admin/groups"),api("/admin/staff")]).then(function(r){G=r[0];STF=r[1];({stu:stu,stf:stf,grp:grp,tsk:tsk,ann:ann,art:art,cht:cht})[tab]()}).catch(fail)}
+function stu(){api("/admin/students").then(function(L){
+ var tch=STF;
+ $("#v").innerHTML='<div class="card"><div class="row"><label>FIO<input id="n1" placeholder="Familiya Ism"></label><label>Telefon<input id="n2" placeholder="+998"></label><label>Guruh<select id="n3">'+opts(G,0,"Guruhsiz")+'</select></label><label>Daraja<input id="n4" placeholder="Beginner"></label><button class="btn" id="add">Qoʻshish</button></div><div id="cb">'+(last||"")+'</div></div><div class="card sc"><table><tr><th>Login</th><th>FIO</th><th>Guruh</th><th>Daraja</th><th></th></tr>'+L.map(function(u){return '<tr class="'+(u.active?"":"off")+'"><td>'+esc(u.login)+"</td><td>"+esc(u.full_name)+"</td><td>"+esc(u.group_name)+"</td><td>"+esc(u.level)+'</td><td><button class="btn g" data-rp="'+u.id+'">Yangi parol</button> <button class="btn g" data-ac="'+u.id+'" data-v="'+(u.active?0:1)+'">'+(u.active?"Oʻchirish":"Yoqish")+"</button></td></tr>"}).join("")+(L.length?"":'<tr><td colspan="5" style="color:var(--mute)">Hali oʻquvchi yoʻq. Yuqoridan qoʻshing.</td></tr>')+"</table></div>";
+ bindCard();
+ $("#add").onclick=function(){var n=$("#n1").value.trim();if(n.length<2){toast("FIO kiriting");return}
+  api("/admin/students",{method:"POST",body:{full_name:n,phone:$("#n2").value,group_id:+$("#n3").value||null,level:$("#n4").value}}).then(function(d){last=card(d.user,d.password);toast("Oʻquvchi qoʻshildi");stu()}).catch(fail)};
+ document.querySelectorAll("[data-rp]").forEach(function(b){b.onclick=function(){if(!confirm("Yangi parol berilsinmi? Eskisi ishlamay qoladi."))return;api("/admin/users/"+b.dataset.rp+"/reset-password",{method:"POST"}).then(function(d){last=card(d.user,d.password);stu()}).catch(fail)}});
+ document.querySelectorAll("[data-ac]").forEach(function(b){b.onclick=function(){api("/admin/users/"+b.dataset.ac,{method:"PATCH",body:{active:b.dataset.v==="1"}}).then(function(){last=null;stu()}).catch(fail)}})}).catch(fail)}
+function stf(){
+ $("#v").innerHTML='<div class="card"><div class="row"><label>FIO<input id="s1"></label><label>Telefon<input id="s2"></label><label>Login (boʻsh qolsa avtomatik)<input id="s3" autocapitalize="none"></label><label style="flex:0;min-width:120px"><span><input type="checkbox" id="s4" checked> Oʻqituvchi</span></label><label style="flex:0;min-width:110px"><span><input type="checkbox" id="s5"> Menejer</span></label><button class="btn" id="sadd">Qoʻshish</button></div><div id="cb">'+(last||"")+'</div></div><div class="card sc"><table><tr><th>Login</th><th>FIO</th><th>Oʻqituvchi</th><th>Menejer</th><th></th></tr>'+STF.map(function(u){return "<tr><td>"+esc(u.login)+"</td><td>"+esc(u.full_name)+(u.is_admin?' <small style="color:var(--mute)">admin</small>':"")+'</td><td><input type="checkbox" data-r="t" data-i="'+u.id+'"'+(u.is_teacher?" checked":"")+(u.is_admin?" disabled":"")+'></td><td><input type="checkbox" data-r="m" data-i="'+u.id+'"'+(u.is_manager?" checked":"")+(u.is_admin?" disabled":"")+'></td><td>'+(u.is_admin?"":'<button class="btn g" data-rp="'+u.id+'">Yangi parol</button>')+"</td></tr>"}).join("")+"</table></div>";
+ bindCard();
+ $("#sadd").onclick=function(){var n=$("#s1").value.trim();if(n.length<2){toast("FIO kiriting");return}
+  api("/admin/staff",{method:"POST",body:{full_name:n,phone:$("#s2").value,login:$("#s3").value||null,is_teacher:$("#s4").checked,is_manager:$("#s5").checked}}).then(function(d){last=card(d.user,d.password);toast("Xodim qoʻshildi");show()}).catch(fail)};
+ document.querySelectorAll("[data-r]").forEach(function(c){c.onchange=function(){var i=c.dataset.i,t=document.querySelector('[data-r="t"][data-i="'+i+'"]').checked,m=document.querySelector('[data-r="m"][data-i="'+i+'"]').checked;
+  api("/admin/staff/"+i+"/roles",{method:"PATCH",body:{is_teacher:t,is_manager:m}}).then(function(){toast("Rol yangilandi");show()}).catch(function(e){fail(e);show()})}});
+ document.querySelectorAll("[data-rp]").forEach(function(b){b.onclick=function(){if(!confirm("Yangi parol berilsinmi?"))return;api("/admin/users/"+b.dataset.rp+"/reset-password",{method:"POST"}).then(function(d){last=card(d.user,d.password);stf()}).catch(fail)}})}
+var DN=["Du","Se","Chor","Pay","Ju","Sha","Yak"],KN={daily:"Kunlik",weekly:"Haftalik",monthly:"Oylik",artifact:"Artifakt",material:"Dars materiali"};
+function dayStr(d){return d?d.split("").map(function(n){return DN[n-1]}).join(", "):"—"}
+function grp(){
+ var tc=STF.filter(function(u){return u.is_teacher});
+ $("#v").innerHTML='<div class="card"><div class="row"><label>Guruh nomi<input id="g1" placeholder="B-12"></label><label>Kurs<input id="g2" placeholder="Ingliz tili"></label><label>Daraja<input id="g3" placeholder="Beginner"></label><label>Oʻqituvchi<select id="g4">'+opts(tc,0,"Tanlanmagan")+'</select></label><label>Dars vaqti<input id="g5" type="time"></label></div><div class="row" style="margin-top:10px"><span style="color:var(--mute)">Dars kunlari:</span>'+DN.map(function(d,i){return '<label style="flex:0;min-width:0;flex-direction:row;align-items:center;gap:4px"><input type="checkbox" class="gd" value="'+(i+1)+'"> '+d+"</label>"}).join("")+'<button class="btn" id="gadd">Qoʻshish</button></div></div><div class="card sc"><table><tr><th>Guruh</th><th>Kurs</th><th>Daraja</th><th>Oʻqituvchi</th><th>Kunlar</th><th>Vaqt</th><th></th></tr>'+G.map(function(g){return "<tr><td>"+esc(g.name)+"</td><td>"+esc(g.course)+"</td><td>"+esc(g.level)+"</td><td>"+esc(g.teacher_name)+"</td><td>"+dayStr(g.days)+"</td><td>"+esc(g.lesson_time||"—")+'</td><td><button class="btn g" data-ge="'+g.id+'">Jadval</button></td></tr>'}).join("")+(G.length?"":'<tr><td colspan="7" style="color:var(--mute)">Hali guruh yoʻq.</td></tr>')+"</table></div>";
+ $("#gadd").onclick=function(){var n=$("#g1").value.trim();if(!n){toast("Guruh nomini yozing");return}
+  var days=Array.from(document.querySelectorAll(".gd:checked")).map(function(x){return x.value}).join("");
+  api("/admin/groups",{method:"POST",body:{name:n,course:$("#g2").value,level:$("#g3").value,days:days,lesson_time:$("#g5").value,teacher_id:+$("#g4").value||null}}).then(function(){toast("Guruh qoʻshildi");show()}).catch(fail)};
+ document.querySelectorAll("[data-ge]").forEach(function(b){b.onclick=function(){var g=G.filter(function(x){return x.id===+b.dataset.ge})[0];
+  var d=prompt("Dars kunlari (1=Du, 2=Se, 3=Chor, 4=Pay, 5=Ju, 6=Sha, 7=Yak). Masalan: 135",g.days);if(d===null)return;
+  var t=prompt("Dars vaqti (masalan 15:00)",g.lesson_time||"");if(t===null)return;
+  api("/admin/groups/"+g.id,{method:"PATCH",body:{days:d.replace(/[^1-7]/g,""),lesson_time:t}}).then(function(){toast("Jadval yangilandi");show()}).catch(fail)}})}
+function tsk(){Promise.all([api("/admin/tasks"),api("/admin/artifacts"),api("/admin/settings")]).then(function(r){var L=r[0],A=r[1],set=r[2];
+ $("#v").innerHTML='<div class="card"><div class="row"><label>Sarlavha<input id="t1" placeholder="Masalan: 10 ta soʻzni yodlang"></label><label>Turi<select id="t2">'+Object.keys(KN).map(function(k){return '<option value="'+k+'">'+KN[k]+"</option>"}).join("")+'</select></label><label>Guruh<select id="t3">'+opts(G,0,"Hamma oʻquvchilar")+'</select></label><label>Daraja (guruh tanlanmasa)<input id="t4" placeholder="Beginner (boʻsh = hamma)"></label></div><div class="row" style="margin-top:10px"><label>Ball<input id="t5" type="number" value="10" min="0"></label><label>Muddat<input id="t6" type="date"></label><label>Artifakt mukofoti<select id="t7">'+opts(A.filter(function(a){return a.active}).map(function(a){return {id:a.id,name:a.icon+" "+a.name}}),0,"Yoʻq")+'</select></label></div><label style="margin:10px 0">Matn / izoh<textarea id="t8" rows="4" style="resize:vertical"></textarea></label><button class="btn" id="tadd">Qoʻshish</button></div>'
+ +'<div class="card"><div class="row"><label>Oylik aktivlik maqsadi (ball). Oʻquvchi shuncha ball yigʻsa tablo 100% boʻladi<input id="tg" type="number" min="10" value="'+set.activity_target+'"></label><label>Davomat uchun ball (“Keldi” belgilansa)<input id="tp2" type="number" min="0" max="50" value="'+set.attendance_points+'"></label><button class="btn g" id="tgs" style="flex:0">Saqlash</button></div></div>'
+ +'<div class="card sc"><table><tr><th>Topshiriq</th><th>Turi</th><th>Kim uchun</th><th>Ball</th><th>Muddat</th><th></th></tr>'+L.map(function(t){return '<tr class="'+(t.active?"":"off")+'"><td>'+esc(t.title)+"</td><td>"+KN[t.kind]+"</td><td>"+esc(t.group_name||t.level||"Hamma")+"</td><td>"+t.points+"</td><td>"+esc(t.due_date||"—")+'</td><td><button class="btn g" data-ta="'+t.id+'" data-v="'+(t.active?0:1)+'">'+(t.active?"Oʻchirish":"Yoqish")+"</button></td></tr>"}).join("")+(L.length?"":'<tr><td colspan="6" style="color:var(--mute)">Hali topshiriq yoʻq.</td></tr>')+"</table></div>";
+ $("#tadd").onclick=function(){var n=$("#t1").value.trim();if(n.length<2){toast("Sarlavhani yozing");return}
+  api("/admin/tasks",{method:"POST",body:{title:n,kind:$("#t2").value,group_id:+$("#t3").value||null,level:$("#t4").value.trim(),points:+$("#t5").value||0,due_date:$("#t6").value||null,artifact_id:+$("#t7").value||null,body:$("#t8").value}}).then(function(){toast("Topshiriq qoʻshildi");tsk()}).catch(fail)};
+ $("#tgs").onclick=function(){api("/admin/settings",{method:"PUT",body:{activity_target:+$("#tg").value,attendance_points:+$("#tp2").value}}).then(function(){toast("Saqlandi")}).catch(fail)};
+ document.querySelectorAll("[data-ta]").forEach(function(b){b.onclick=function(){api("/admin/tasks/"+b.dataset.ta,{method:"PATCH",body:{active:b.dataset.v==="1"}}).then(tsk).catch(fail)}})}).catch(fail)}
+function ann(){api("/admin/announcements").then(function(L){
+ $("#v").innerHTML='<div class="card"><div class="row"><label>Sarlavha<input id="a1"></label><label>Guruh<select id="a2">'+opts(G,0,"Hamma oʻquvchilar")+'</select></label></div><label style="margin:10px 0">Matn<textarea id="a3" rows="3" style="resize:vertical"></textarea></label><button class="btn" id="aadd">Joylash</button></div><div class="card sc"><table><tr><th>Sarlavha</th><th>Kim uchun</th><th></th></tr>'+L.map(function(a){return '<tr class="'+(a.active?"":"off")+'"><td>'+esc(a.title)+'<br><small style="color:var(--mute)">'+esc(a.body)+"</small></td><td>"+esc(a.group_name||"Hamma")+'</td><td><button class="btn g" data-aa="'+a.id+'" data-v="'+(a.active?0:1)+'">'+(a.active?"Yashirish":"Yoqish")+"</button></td></tr>"}).join("")+(L.length?"":'<tr><td colspan="3" style="color:var(--mute)">Hali eʼlon yoʻq.</td></tr>')+"</table></div>";
+ $("#aadd").onclick=function(){var n=$("#a1").value.trim();if(n.length<2){toast("Sarlavhani yozing");return}
+  api("/admin/announcements",{method:"POST",body:{title:n,body:$("#a3").value,group_id:+$("#a2").value||null}}).then(function(){toast("Eʼlon joylandi");ann()}).catch(fail)};
+ document.querySelectorAll("[data-aa]").forEach(function(b){b.onclick=function(){api("/admin/announcements/"+b.dataset.aa,{method:"PATCH",body:{active:b.dataset.v==="1"}}).then(ann).catch(fail)}})}).catch(fail)}
+function art(){api("/admin/artifacts").then(function(L){
+ $("#v").innerHTML='<div class="card"><div class="row"><label style="flex:0;min-width:90px">Belgi (emoji)<input id="r2" value="🏺" maxlength="4"></label><label>Nomi<input id="r1" placeholder="Masalan: Yulduz kompas"></label><label>Tavsif<input id="r3"></label><button class="btn" id="radd">Qoʻshish</button></div><p style="color:var(--mute);margin:10px 0 0">Artifaktni topshiriqqa “Artifakt mukofoti” sifatida bogʻlang: oʻquvchi topshiriqni bajarganda oladi.</p></div><div class="card sc"><table><tr><th></th><th>Nomi</th><th>Tavsif</th><th></th></tr>'+L.map(function(a){return '<tr class="'+(a.active?"":"off")+'"><td style="font-size:22px">'+esc(a.icon)+"</td><td>"+esc(a.name)+"</td><td>"+esc(a.description)+'</td><td><button class="btn g" data-ar="'+a.id+'" data-v="'+(a.active?0:1)+'">'+(a.active?"Oʻchirish":"Yoqish")+"</button></td></tr>"}).join("")+(L.length?"":'<tr><td colspan="4" style="color:var(--mute)">Hali artifakt yoʻq.</td></tr>')+"</table></div>";
+ $("#radd").onclick=function(){var n=$("#r1").value.trim();if(n.length<2){toast("Nomini yozing");return}
+  api("/admin/artifacts",{method:"POST",body:{name:n,icon:$("#r2").value||"🏺",description:$("#r3").value}}).then(function(){toast("Artifakt qoʻshildi");art()}).catch(fail)};
+ document.querySelectorAll("[data-ar]").forEach(function(b){b.onclick=function(){api("/admin/artifacts/"+b.dataset.ar,{method:"PATCH",body:{active:b.dataset.v==="1"}}).then(art).catch(fail)}})}).catch(fail)}
+function cht(){api("/admin/chat/threads").then(function(L){
+ $("#v").innerHTML='<div class="card"><p style="margin:0;color:var(--mute)">Oʻquvchi va oʻqituvchilar yozishmasini nazorat qilish. Nomaqbul xabarni oʻchirsangiz, u “Xabar oʻchirilgan” boʻlib qoladi.</p></div><div class="card sc"><table><tr><th>Suhbat</th><th>Xabarlar</th><th>Oxirgisi</th><th></th></tr>'+L.map(function(t){return "<tr><td>"+esc(t.title)+"</td><td>"+t.count+"</td><td>"+esc(t.last_at?t.last_at.slice(0,16).replace("T"," "):"—")+'</td><td><button class="btn g" data-ct="'+t.id+'">Koʻrish</button></td></tr>'}).join("")+(L.length?"":'<tr><td colspan="4" style="color:var(--mute)">Hali yozishma yoʻq.</td></tr>')+'</table></div><div id="cmx"></div>';
+ document.querySelectorAll("[data-ct]").forEach(function(b){b.onclick=function(){api("/admin/chat/messages?thread_id="+b.dataset.ct).then(function(M){
+  $("#cmx").innerHTML='<div class="card sc"><table><tr><th>Kim</th><th>Xabar</th><th>Vaqt</th><th></th></tr>'+M.map(function(m){return '<tr class="'+(m.deleted?"off":"")+'"><td>'+esc(m.sender_name)+"</td><td>"+esc(m.raw)+"</td><td>"+esc(m.at.slice(0,16).replace("T"," "))+"</td><td>"+(m.deleted?"":'<button class="btn g" data-cd="'+m.id+'">Oʻchirish</button>')+"</td></tr>"}).join("")+"</table></div>";
+  document.querySelectorAll("[data-cd]").forEach(function(d){d.onclick=function(){if(!confirm("Bu xabar oʻchirilsinmi?"))return;api("/admin/chat/messages/"+d.dataset.cd+"/delete",{method:"POST"}).then(function(){toast("Oʻchirildi");b.click()}).catch(fail)}})}).catch(fail)}})}).catch(fail)}
+if(T)api("/auth/me").then(function(u){if(u.is_admin)start(u);else logout()}).catch(function(){logout()});
+})();
+</script>
+</body>
+</html>

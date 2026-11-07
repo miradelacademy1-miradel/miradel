@@ -1,0 +1,11 @@
+{
+  "appId": "uz.miradel.academy",
+  "appName": "Miradel",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

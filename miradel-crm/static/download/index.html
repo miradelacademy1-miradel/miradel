@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Miradel Academy — ilovani yuklab olish</title>
+<style>
+:root{--bg:#d9dadb;--card:#eceded;--ink:#1d1f22;--mute:#6a6e73;--acc:#2b2e33;--accink:#f1f2f2;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root{--bg:#141618;--card:#1f2225;--ink:#eceeef;--mute:#9a9fa4;--acc:#e3e5e6;--accink:#17191b}}
+*,*::before,*::after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;justify-content:center}
+main{width:100%;max-width:480px;padding:8vh 16px 32px}
+.card{background:var(--card);border-radius:20px;padding:18px;margin-bottom:14px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:15px;margin:0 0 8px}p{margin:0 0 8px;color:var(--mute)}
+.logo{width:56px;height:56px;border-radius:16px;background:var(--acc);color:var(--accink);display:grid;place-items:center;font-weight:800;font-size:24px;margin-bottom:12px}
+.btn{display:block;text-align:center;text-decoration:none;background:var(--acc);color:var(--accink);border-radius:14px;padding:14px;font-weight:700}
+.btn.off{opacity:.45;pointer-events:none}
+ol{margin:0;padding-left:20px}li{margin-bottom:6px}
+small{color:var(--mute)}
+</style>
+</head>
+<body>
+<main>
+ <div class="card"><div class="logo">M</div><h1>Miradel Academy</h1><p>Android ilovasi. Darsliklar va topshiriqlar internetsiz ham ishlaydi.</p>
+  <a class="btn off" id="dl" href="#">Yuklab olinmoqda…</a><p style="margin-top:8px" id="ver"><small></small></p></div>
+ <div class="card"><h2>Oʻrnatish</h2>
+  <ol>
+   <li>Yuqoridagi tugma bilan APK faylni yuklab oling.</li>
+   <li>Yuklangan faylni oching. Telefon “Nomaʼlum manbadan oʻrnatish” ruxsatini soʻrasa, <b>Sozlamalar → Ruxsat berish</b> ni bosing (faqat shu brauzer/fayl uchun).</li>
+   <li>“Oʻrnatish” ni bosing, keyin ilovani oching.</li>
+   <li>Kartochkangizdagi <b>login</b> va <b>parol</b> bilan kiring. Birinchi kirishda internet kerak, keyin oflayn ishlaydi.</li>
+  </ol></div>
+ <div class="card"><h2>Iphone (iOS) uchun</h2><p>APK faqat Android uchun. iPhone’da <a href="/app/">/app/</a> sahifasini Safari’da oching va “Bosh ekranga qoʻshish” ni tanlang.</p></div>
+</main>
+<script>
+fetch("/api/app/version").then(function(r){return r.json()}).then(function(v){
+ var b=document.getElementById("dl");
+ if(v&&v.apk_url){b.href=v.apk_url;b.textContent="APK yuklab olish";b.classList.remove("off");document.querySelector("#ver small").textContent="Versiya: "+(v.version_name||v.version_code)}
+ else{b.textContent="APK hali tayyor emas";document.querySelector("#ver small").textContent="Administrator APK’ni yigʻib chiqargach shu yerda paydo boʻladi."}
+}).catch(function(){var b=document.getElementById("dl");b.textContent="Maʼlumot olinmadi, keyinroq urinib koʻring"});
+</script>
+</body>
+</html>
