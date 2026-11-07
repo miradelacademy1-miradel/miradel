@@ -10,8 +10,10 @@ def _db_url() -> str:
     return url
 
 
-DATABASE_URL = _db_url()
 ENV = os.getenv("ENV", "dev")
+DATABASE_URL = _db_url()
+if ENV == "prod" and DATABASE_URL.startswith("sqlite"):
+    raise RuntimeError("DATABASE_URL oʻrnatilmagan: Railway Variables ga Postgres havolasini qoʻshing (aks holda maʼlumot har deployda oʻchib ketadi)")
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 if not SECRET_KEY:
     if ENV == "prod":
