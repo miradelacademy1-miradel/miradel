@@ -37,6 +37,7 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     full_name: Mapped[str] = mapped_column(String(120))
     phone: Mapped[str] = mapped_column(String(30), default="")
+    parent_phone: Mapped[str] = mapped_column(String(30), default="", server_default=text("''"))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_manager: Mapped[bool] = mapped_column(Boolean, default=False)
     is_teacher: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -45,8 +46,10 @@ class User(Base):
     level: Mapped[str] = mapped_column(String(60), default="")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    started_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     monthly_fee: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     fee_day: Mapped[int] = mapped_column(Integer, default=10, server_default=text("10"))
+    fee_day_origin: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     salary_mode: Mapped[str] = mapped_column(String(12), default="per_lesson", server_default=text("'per_lesson'"))
     salary_rate: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -190,7 +193,7 @@ class LessonException(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     day: Mapped[date] = mapped_column(Date, index=True)
     group_id: Mapped[Optional[int]] = mapped_column(ForeignKey("groups.id"), nullable=True)
-    kind: Mapped[str] = mapped_column(String(10))  # holiday|cancelled|extra
+    kind: Mapped[str] = mapped_column(String(10))
     note: Mapped[str] = mapped_column(String(200), default="", server_default=text("''"))
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -213,7 +216,7 @@ class AbsenceFollowup(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     day: Mapped[date] = mapped_column(Date, index=True)
-    status: Mapped[str] = mapped_column(String(20))  # called|no_answer|parent_excused|note
+    status: Mapped[str] = mapped_column(String(20))
     note: Mapped[str] = mapped_column(String(300), default="", server_default=text("''"))
     by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
@@ -244,6 +247,7 @@ class Payment(Base):
     month: Mapped[str] = mapped_column(String(7), index=True)
     amount: Mapped[int] = mapped_column(Integer)
     method: Mapped[str] = mapped_column(String(10), default="cash")
+    course: Mapped[str] = mapped_column(String(80), default="", server_default=text("''"))
     note: Mapped[str] = mapped_column(String(200), default="")
     paid_on: Mapped[date] = mapped_column(Date)
     voided: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -305,3 +309,57 @@ class ChatRead(Base):
     thread_id: Mapped[int] = mapped_column(ForeignKey("chat_threads.id"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     last_read_id: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+    __table_args__ = (UniqueConstraint("student_id", "month", name="uq_invoice_student_month"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    month: Mapped[str] = mapped_column(String(7), index=True)
+    amount_due: Mapped[int] = mapped_column(Integer, default=0)
+    discount: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    discount_reason: Mapped[str] = mapped_column(String(200), default="", server_default=text("''"))
+    waived: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    note: Mapped[str] = mapped_column(String(200), default="", server_default=text("''"))
+    manual: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    due_day: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class DiscountPreset(Base):
+    __tablename__ = "discount_presets"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True)
+    kind: Mapped[str] = mapped_column(String(10))  # percent|amount
+    value: Mapped[int] = mapped_column(Integer)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class StudentDiscount(Base):
+    __tablename__ = "student_discounts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    preset_id: Mapped[Optional[int]] = mapped_column(ForeignKey("discount_presets.id"), nullable=True)
+    kind: Mapped[str] = mapped_column(String(10))
+    value: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(200), default="", server_default=text("''"))
+    from_month: Mapped[str] = mapped_column(String(7), index=True)
+    to_month: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    voided: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+
+
+class BillingFreeze(Base):
+    __tablename__ = "billing_freezes"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    from_month: Mapped[str] = mapped_column(String(7), index=True)
+    to_month: Mapped[str] = mapped_column(String(7))
+    reason: Mapped[str] = mapped_column(String(200), default="", server_default=text("''"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    voided: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
