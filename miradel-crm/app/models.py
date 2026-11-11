@@ -46,7 +46,7 @@ class User(Base):
     level: Mapped[str] = mapped_column(String(60), default="")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
-    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0")) # <-- TUZATILDI
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     started_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     monthly_fee: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     fee_day: Mapped[int] = mapped_column(Integer, default=10, server_default=text("10"))
@@ -252,6 +252,7 @@ class Payment(Base):
     note: Mapped[str] = mapped_column(String(200), default="")
     paid_on: Mapped[date] = mapped_column(Date)
     voided: Mapped[bool] = mapped_column(Boolean, default=False)
+    receipt_no: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -266,6 +267,18 @@ class SalaryPayout(Base):
     paid_on: Mapped[date] = mapped_column(Date)
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SalaryAdjustment(Base):
+    __tablename__ = "salary_adjustments"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    teacher_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    month: Mapped[str] = mapped_column(String(7), index=True)
+    amount: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(200), default="", server_default=text("''"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    voided: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
 
 
 class WorkPlan(Base):
@@ -333,7 +346,7 @@ class DiscountPreset(Base):
     __tablename__ = "discount_presets"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(80), unique=True)
-    kind: Mapped[str] = mapped_column(String(10))  # percent|amount
+    kind: Mapped[str] = mapped_column(String(10))
     value: Mapped[int] = mapped_column(Integer)
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
