@@ -16,7 +16,7 @@ from .config import ADMIN_LOGIN, ADMIN_PASSWORD, ENV
 from .db import SessionLocal
 from .finance import month_of, today_uz
 from .migrate import ensure_schema
-from .routers import admin, appinfo, attendance, auth, chat, content, invoices, manager, payment_settings, sync, teacher
+from .routers import admin, appinfo, attendance, auth, chat, content, export, invoices, manager, payment_settings, reports, sync, teacher
 from .security import hash_password
 
 log = logging.getLogger("miradel")
@@ -37,7 +37,6 @@ def seed_admin():
 
 
 async def invoice_generator_task():
-    """TZ-4 A: startup + har kuni joriy oy uchun invoice generatsiyasi (idempotent)."""
     if ENV != "prod":
         return
     from .invoices_service import generate_month
@@ -75,6 +74,8 @@ app.include_router(manager.router)
 app.include_router(attendance.router)
 app.include_router(invoices.router)
 app.include_router(payment_settings.router)
+app.include_router(reports.router)
+app.include_router(export.router)
 app.include_router(chat.router)
 app.include_router(chat.admin_router)
 app.include_router(appinfo.router)
