@@ -14,13 +14,13 @@ from ..attendance_service import (
     apply_marks, effective_teacher_today, expected_days_in_range,
     has_overlapping_substitution, is_expected_day,
 )
-from ..audit import audit
 from ..db import get_db
 from ..finance import today_uz
 from ..models import (
     AbsenceFollowup, Attendance, AttendanceBatch, Group, GroupSubstitution,
     LessonException, Setting, User,
 )
+from .admin import audit
 from .manager import finance_user
 
 router = APIRouter(prefix="/api/attendance", tags=["attendance"], dependencies=[Depends(finance_user)])
@@ -188,7 +188,6 @@ def matrix(
     m = _parse_month(month)
     first, last = _month_bounds(m)
 
-    # days: expected lesson days + extra days + any day with marks
     days_set: set[date] = set(expected_days_in_range(db, g, first, last))
     for e in db.scalars(select(LessonException).where(
         LessonException.day >= first, LessonException.day <= last,
@@ -285,10 +284,9 @@ def mark(
     today = today_uz()
     if body.day > today:
         raise HTTPException(400, "Kelajak sanaga davomat belgilab boʻlmaydi")
-    if body.day < g.created_at.date() if g.created_at else False:
+    if g.created_at and body.day < g.created_at.date():
         raise HTTPException(400, "Guruh yaratilishidan oldingi sanaga belgilab boʻlmaydi")
 
-    # check whether any existing row changes
     changes = 0
     for rec in body.records:
         existing = db.scalar(select(Attendance).where(
@@ -482,7 +480,6 @@ def create_exception(
     created = 0
     skipped = []
     for d in days:
-        # check marks exist for holiday/cancelled
         if body.kind in ("holiday", "cancelled"):
             q = select(func.count(Attendance.id)).where(Attendance.day == d)
             if body.group_id is None:
