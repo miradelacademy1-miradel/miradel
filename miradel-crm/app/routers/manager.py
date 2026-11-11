@@ -1,5 +1,5 @@
-"""Menejer: moliya (oʻquvchi toʻlovlari), oʻqituvchilar maoshi, ish rejasi, dars hisobotlari."""
-from datetime import date, datetime, timezone
+"""Menejer: moliya, oʻqituvchilar maoshi, ish rejasi, dars hisobotlari."""
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..deps import current_user
 from ..finance import effective_fee, month_bounds, month_of, pay_status, today_uz
-from ..models import Group, LessonReport, Payment, SalaryPayout, User, WorkPlan
+from ..models import Group, Invoice, LessonReport, Payment, SalaryPayout, User, WorkPlan
+from ..pay_settings import load_pay_settings
 from .admin import audit
 
 MONTH = r"^\d{4}-(0[1-9]|1[0-2])$"
@@ -38,13 +39,25 @@ def finance(month: Optional[str] = None, db: Session = Depends(get_db)):
     if len(m) != 7:
         raise HTTPException(400, "Oy formati: YYYY-MM")
     today = today_uz()
+    cfg = load_pay_settings(db)
+    grace = cfg["grace_days"]
+
     groups = {g.id: g for g in db.scalars(select(Group))}
     tname = {u.id: u.full_name for u in db.scalars(select(User).where(User.is_teacher.is_(True)))}
     paid = dict(db.execute(select(Payment.student_id, func.sum(Payment.amount)).where(Payment.month == m, Payment.voided.is_(False)).group_by(Payment.student_id)).all())
+    invoices = {inv.student_id: inv for inv in db.scalars(select(Invoice).where(Invoice.month == m))}
+
     rows, expected, debtors, unpriced = [], 0, 0, 0
     for s in db.scalars(select(User).where(User.is_student.is_(True), User.active.is_(True)).order_by(User.full_name)):
-        fee, p = effective_fee(s, groups), int(paid.get(s.id, 0))
-        st = pay_status(fee, p, m, s.fee_day, today)
+        inv = invoices.get(s.id)
+        if inv:
+            fee = 0 if inv.waived else max(0, inv.amount_due - inv.discount)
+            due_day = inv.due_day if inv.due_day else s.fee_day
+        else:
+            fee = effective_fee(s, groups)
+            due_day = s.fee_day
+        p = int(paid.get(s.id, 0))
+        st = pay_status(fee, p, m, due_day, today, grace)
         if fee > 0:
             expected += fee
             if p < fee:
@@ -53,7 +66,7 @@ def finance(month: Optional[str] = None, db: Session = Depends(get_db)):
             unpriced += 1
         g = groups.get(s.group_id)
         rows.append({"id": s.id, "full_name": s.full_name, "login": s.login, "group": g.name if g else "", "fee": fee,
-                     "own_fee": s.monthly_fee, "fee_day": s.fee_day, "paid": p, "left": max(0, fee - p), "status": st})
+                     "own_fee": s.monthly_fee, "fee_day": due_day, "paid": p, "left": max(0, fee - p), "status": st})
     collected = int(db.scalar(select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.month == m, Payment.voided.is_(False))) or 0)
     return {"month": m, "today": today.isoformat(),
             "totals": {"expected": expected, "collected": collected, "debtors": debtors, "unpriced": unpriced},
@@ -67,11 +80,13 @@ class PayIn(BaseModel):
     amount: int = Field(ge=1, le=100_000_000)
     method: str = Field(default="cash", pattern=r"^(cash|card|transfer)$")
     note: str = Field(default="", max_length=200)
+    paid_on: Optional[date] = None
+    course: Optional[str] = Field(default=None, max_length=80)
 
 
 def _pay_out(p: Payment) -> dict:
     return {"id": p.id, "month": p.month, "amount": p.amount, "method": p.method, "note": p.note,
-            "paid_on": p.paid_on.isoformat(), "voided": p.voided}
+            "paid_on": p.paid_on.isoformat(), "voided": p.voided, "course": p.course or ""}
 
 
 @router.post("/payments")
@@ -79,8 +94,21 @@ def add_payment(body: PayIn, me: User = Depends(finance_user), db: Session = Dep
     s = db.get(User, body.student_id)
     if not s or not s.is_student:
         raise HTTPException(404, "Oʻquvchi topilmadi")
-    p = Payment(student_id=s.id, month=body.month, amount=body.amount, method=body.method, note=body.note.strip(),
-                paid_on=today_uz(), created_by=me.id)
+
+    today = today_uz()
+    paid_on = body.paid_on if body.paid_on else today
+    if paid_on > today:
+        raise HTTPException(400, "Toʻlov sanasi kelajakda boʻlishi mumkin emas")
+    if paid_on < today - timedelta(days=60):
+        raise HTTPException(400, "Toʻlov sanasi 60 kundan eski boʻlishi mumkin emas")
+
+    course = body.course.strip() if body.course else ""
+    if not course:
+        g = db.get(Group, s.group_id) if s.group_id else None
+        course = (g.course if g and g.course else "")
+
+    p = Payment(student_id=s.id, month=body.month, amount=body.amount, method=body.method,
+                note=body.note.strip(), paid_on=paid_on, course=course[:80], created_by=me.id)
     db.add(p)
     audit(db, me, "payment.add", s.login, f"{body.month} {body.amount}")
     db.commit()
@@ -117,6 +145,7 @@ def set_student_fee(sid: int, body: FeeIn, me: User = Depends(finance_user), db:
     s.monthly_fee = body.monthly_fee
     if body.fee_day:
         s.fee_day = body.fee_day
+        s.fee_day_origin = body.fee_day  # TZ-7 D: qoʻlda oʻzgartirish originni reset qiladi
     audit(db, me, "fee.student", s.login, f"{body.monthly_fee}/{s.fee_day}")
     db.commit()
     return {"id": s.id, "monthly_fee": s.monthly_fee, "fee_day": s.fee_day}
