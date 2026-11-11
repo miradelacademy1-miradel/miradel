@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Miradel — boshqaruv paneli</title>
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+<div id="login" class="login-screen" hidden>
+  <div class="login-card">
+    <h1>Miradel panel</h1>
+    <p class="login-sub">Menejer va admin uchun</p>
+    <label>Login<input id="lg" autocomplete="username" autocapitalize="none"></label>
+    <label>Parol<input id="pw" type="password" autocomplete="current-password"></label>
+    <button class="btn" id="go">Kirish</button>
+    <div id="lg-err" class="err" role="alert"></div>
+  </div>
+</div>
+<div id="shell" hidden>
+  <aside class="sidebar">
+    <div class="brand">M</div>
+    <div class="who"><b id="who-name"></b><small id="who-role"></small></div>
+    <nav id="tabs"></nav>
+    <button class="btn ghost" id="out">Chiqish</button>
+  </aside>
+  <main id="main"></main>
+</div>
+<div id="toast" class="toast" role="status"></div>
+<script src="panel.js"></script>
+<script src="pages/home.js"></script>
+<script src="pages/attendance.js"></script>
+</body>
+</html>
