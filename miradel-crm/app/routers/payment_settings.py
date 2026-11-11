@@ -389,4 +389,137 @@ def convergence_reset(body: ResetIn, me: User = Depends(require_admin), db: Sess
         if s.fee_day_origin is not None:
             s.fee_day_origin = None
             count += 1
-    audit(db, me, "
+    audit(db, me, "convergence.reset", "fee_day_origin", f"count={count}")
+    db.commit()
+    return {"cleared": count}
+
+
+# ---------------- F. Bulk student update ----------------
+
+class BulkStudentIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=200)
+    monthly_fee: Optional[int] = Field(default=None, ge=0, le=100_000_000)
+    fee_day: Optional[int] = Field(default=None, ge=1, le=31)
+
+
+@router.post("/payment-settings/bulk-student")
+def bulk_student(body: BulkStudentIn, me: User = Depends(require_admin), db: Session = Depends(get_db)):
+    if body.monthly_fee is None and body.fee_day is None:
+        raise HTTPException(400, "monthly_fee yoki fee_day dan biri kerak")
+    ids = list({x for x in body.ids})
+    students = list(db.scalars(select(User).where(User.id.in_(ids), User.is_student.is_(True))))
+    if not students:
+        raise HTTPException(404, "Oʻquvchilar topilmadi")
+    updated = 0
+    for s in students:
+        if body.monthly_fee is not None:
+            s.monthly_fee = body.monthly_fee
+        if body.fee_day is not None:
+            s.fee_day = body.fee_day
+            s.fee_day_origin = body.fee_day  # TZ-7 D: qoʻlda oʻzgartirish originni reset qiladi
+        updated += 1
+    audit(db, me, "bulk_student.update", f"count={updated}", f"fee={body.monthly_fee} day={body.fee_day}")
+    db.commit()
+    return {"updated": updated}
+
+
+# ---------------- D. Punctuality report ----------------
+
+@router.get("/payments/punctuality")
+def punctuality(month: Optional[str] = None, db: Session = Depends(get_db)):
+    m = month or month_of(today_uz())
+    if len(m) != 7:
+        raise HTTPException(400, "Oy formati: YYYY-MM")
+    groups = {g.id: g for g in db.scalars(select(Group))}
+    rows = []
+    for s in db.scalars(select(User).where(User.is_student.is_(True), User.active.is_(True)).order_by(User.full_name)):
+        inv = db.scalar(select(Invoice).where(Invoice.student_id == s.id, Invoice.month == m))
+        due_day = inv.due_day if inv and inv.due_day else s.fee_day
+        due_date = clamp_day(m, due_day)
+        # birinchi toʻlov
+        first_pay = db.scalar(select(func.min(Payment.paid_on)).where(
+            Payment.student_id == s.id, Payment.month == m, Payment.voided.is_(False)
+        ))
+        if first_pay:
+            days_late = max(0, (first_pay - due_date).days)
+            actual_paid_on = first_pay.isoformat()
+        else:
+            days_late = None
+            actual_paid_on = None
+        rows.append({
+            "student_id": s.id, "full_name": s.full_name,
+            "group": groups.get(s.group_id).name if s.group_id in groups else "",
+            "planned_due_day": due_day, "planned_due_date": due_date.isoformat(),
+            "actual_paid_on": actual_paid_on, "days_late": days_late,
+        })
+    return {"month": m, "rows": rows}
+
+
+# ---------------- E. Reminders ----------------
+
+@router.get("/payments/reminders")
+def reminders(day: Optional[str] = None, db: Session = Depends(get_db)):
+    d = date.fromisoformat(day) if day else today_uz()
+    cfg = load_pay_settings(db)
+    try:
+        offsets = [int(x) for x in cfg["remind_days_before"].split(",") if x.strip()]
+    except ValueError:
+        offsets = [3, 1, 0]
+
+    m = month_of(d)
+    groups = {g.id: g for g in db.scalars(select(Group))}
+    upcoming = []
+    overdue = []
+
+    for s in db.scalars(select(User).where(User.is_student.is_(True), User.active.is_(True))):
+        inv = db.scalar(select(Invoice).where(Invoice.student_id == s.id, Invoice.month == m))
+        due_day = inv.due_day if inv and inv.due_day else s.fee_day
+        due_date = clamp_day(m, due_day)
+
+        if inv:
+            fee = 0 if inv.waived else max(0, inv.amount_due - inv.discount)
+        else:
+            fee = effective_fee(s, groups)
+        if fee <= 0:
+            continue
+
+        paid = db.scalar(select(func.coalesce(func.sum(Payment.amount), 0)).where(
+            Payment.student_id == s.id, Payment.month == m, Payment.voided.is_(False)
+        )) or 0
+        left = max(0, fee - paid)
+        if left <= 0:
+            continue
+
+        g = groups.get(s.group_id)
+        base = {
+            "student_id": s.id, "full_name": s.full_name,
+            "group": g.name if g else "",
+            "parent_phone": s.parent_phone or "",
+            "phone": s.phone or "",
+            "due_date": due_date.isoformat(),
+            "left": left,
+        }
+        for k in offsets:
+            if due_date == d + timedelta(days=k):
+                upcoming.append({**base, "offset_days": k})
+                break
+        if due_date < d:
+            overdue.append({**base, "days_overdue": (d - due_date).days})
+
+    upcoming.sort(key=lambda x: x["offset_days"])
+    overdue.sort(key=lambda x: x["days_overdue"], reverse=True)
+    return {"day": d.isoformat(), "month": m, "upcoming": upcoming, "overdue": overdue}
+
+
+# ---------------- Manager generate helper (also exposed under /api/admin for TZ-7 admin panel) ----------------
+
+class AdminGenIn(BaseModel):
+    month: str = Field(pattern=MONTH)
+
+
+@router.post("/payments/invoices/generate")
+def admin_generate(body: AdminGenIn, me: User = Depends(require_admin), db: Session = Depends(get_db)):
+    result = generate_month(db, body.month)
+    audit(db, me, "invoice.generate", body.month, str(result))
+    db.commit()
+    return result
