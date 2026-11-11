@@ -46,6 +46,7 @@ class User(Base):
     level: Mapped[str] = mapped_column(String(60), default="")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0")) # <-- TUZATILDI
     started_on: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     monthly_fee: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     fee_day: Mapped[int] = mapped_column(Integer, default=10, server_default=text("10"))
