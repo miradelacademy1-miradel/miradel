@@ -182,6 +182,8 @@ class SettingsIn(BaseModel):
     attendance_points_mode: Optional[str] = Field(default=None, pattern=r"^(all|scheduled_only)$")
     teacher_attendance_window_days: Optional[int] = Field(default=None, ge=1, le=365)
     streak_alert_days: Optional[int] = Field(default=None, ge=1, le=30)
+    risk_attendance_percent: Optional[int] = Field(default=None, ge=0, le=100)
+    risk_inactive_days: Optional[int] = Field(default=None, ge=1, le=365)
 
 
 def _settings(db: Session) -> dict:
@@ -191,6 +193,8 @@ def _settings(db: Session) -> dict:
         "attendance_points_mode": get_setting(db, "attendance_points_mode", "all"),
         "teacher_attendance_window_days": int(get_setting(db, "teacher_attendance_window_days", "30")),
         "streak_alert_days": int(get_setting(db, "streak_alert_days", "3")),
+        "risk_attendance_percent": int(get_setting(db, "risk_attendance_percent", "60")),
+        "risk_inactive_days": int(get_setting(db, "risk_inactive_days", "14")),
     }
 
 
@@ -207,6 +211,8 @@ def put_settings(body: SettingsIn, admin: User = Depends(require_admin), db: Ses
         ("attendance_points_mode", body.attendance_points_mode),
         ("teacher_attendance_window_days", body.teacher_attendance_window_days),
         ("streak_alert_days", body.streak_alert_days),
+        ("risk_attendance_percent", body.risk_attendance_percent),
+        ("risk_inactive_days", body.risk_inactive_days),
     ):
         if val is None:
             continue
