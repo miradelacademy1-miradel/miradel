@@ -80,6 +80,8 @@ def patch_user(uid: int, body: UserPatch, admin: User = Depends(require_admin), 
         raise HTTPException(400, "Guruh topilmadi")
     for k, v in data.items():
         setattr(u, k, v.strip() if isinstance(v, str) else v)
+    if data.get("active") is False:
+        u.token_version = (u.token_version or 0) + 1  # qayta yoqilsa ham eski tokenlar ishlamasin
     audit(db, admin, "user.update", u.login, ",".join(data.keys()))
     db.commit()
     return user_out(u)
@@ -92,6 +94,7 @@ def reset_password(uid: int, admin: User = Depends(require_admin), db: Session =
         raise HTTPException(404, "Topilmadi")
     pwd = gen_password()
     u.password_hash = hash_password(pwd)
+    u.token_version = (u.token_version or 0) + 1  # eski qurilmalardagi kirish bekor qilinadi
     audit(db, admin, "user.reset_password", u.login)
     db.commit()
     return {"user": user_out(u), "password": pwd}
