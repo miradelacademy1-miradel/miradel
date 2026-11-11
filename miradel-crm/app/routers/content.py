@@ -101,4 +101,118 @@ class AnnPatch(BaseModel):
 
 
 def ann_out(a: Announcement, gm: dict) -> dict:
-    return {"id": a.id, "title": a.title, "body": a.body, "group_id":
+    return {"id": a.id, "title": a.title, "body": a.body, "group_id": a.group_id,
+            "group_name": gm.get(a.group_id, ""), "active": a.active}
+
+
+@router.get("/announcements")
+def announcements(db: Session = Depends(get_db)):
+    gm = {g.id: g.name for g in db.scalars(select(Group))}
+    return [ann_out(a, gm) for a in db.scalars(select(Announcement).order_by(Announcement.id.desc()).limit(100))]
+
+
+@router.post("/announcements")
+def create_ann(body: AnnIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    _check_refs(db, body.group_id, None)
+    a = Announcement(**body.model_dump())
+    db.add(a)
+    audit(db, admin, "announcement.create", body.title)
+    db.commit()
+    return ann_out(a, {})
+
+
+@router.patch("/announcements/{aid}")
+def patch_ann(aid: int, body: AnnPatch, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    a = db.get(Announcement, aid)
+    if not a:
+        raise HTTPException(404, "Topilmadi")
+    for k, v in body.model_dump(exclude_unset=True).items():
+        setattr(a, k, v)
+    audit(db, admin, "announcement.update", a.title)
+    db.commit()
+    return ann_out(a, {})
+
+
+class ArtIn(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    icon: str = Field(default="🏺", max_length=16)
+    description: str = Field(default="", max_length=200)
+
+
+class ArtPatch(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=80)
+    icon: Optional[str] = Field(default=None, max_length=16)
+    description: Optional[str] = Field(default=None, max_length=200)
+    active: Optional[bool] = None
+
+
+def art_out(a: Artifact) -> dict:
+    return {"id": a.id, "name": a.name, "icon": a.icon, "description": a.description, "active": a.active}
+
+
+@router.get("/artifacts")
+def artifacts(db: Session = Depends(get_db)):
+    return [art_out(a) for a in db.scalars(select(Artifact).order_by(Artifact.id))]
+
+
+@router.post("/artifacts")
+def create_art(body: ArtIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    a = Artifact(**body.model_dump())
+    db.add(a)
+    audit(db, admin, "artifact.create", body.name)
+    db.commit()
+    return art_out(a)
+
+
+@router.patch("/artifacts/{aid}")
+def patch_art(aid: int, body: ArtPatch, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    a = db.get(Artifact, aid)
+    if not a:
+        raise HTTPException(404, "Topilmadi")
+    for k, v in body.model_dump(exclude_unset=True).items():
+        setattr(a, k, v)
+    audit(db, admin, "artifact.update", a.name)
+    db.commit()
+    return art_out(a)
+
+
+class SettingsIn(BaseModel):
+    activity_target: int = Field(ge=10, le=100000)
+    attendance_points: Optional[int] = Field(default=None, ge=0, le=50)
+    attendance_points_mode: Optional[str] = Field(default=None, pattern=r"^(all|scheduled_only)$")
+    teacher_attendance_window_days: Optional[int] = Field(default=None, ge=1, le=365)
+    streak_alert_days: Optional[int] = Field(default=None, ge=1, le=30)
+
+
+def _settings(db: Session) -> dict:
+    return {
+        "activity_target": int(get_setting(db, "activity_target", "300")),
+        "attendance_points": int(get_setting(db, "attendance_points", "2")),
+        "attendance_points_mode": get_setting(db, "attendance_points_mode", "all"),
+        "teacher_attendance_window_days": int(get_setting(db, "teacher_attendance_window_days", "30")),
+        "streak_alert_days": int(get_setting(db, "streak_alert_days", "3")),
+    }
+
+
+@router.get("/settings")
+def settings(db: Session = Depends(get_db)):
+    return _settings(db)
+
+
+@router.put("/settings")
+def put_settings(body: SettingsIn, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    for key, val in (
+        ("activity_target", body.activity_target),
+        ("attendance_points", body.attendance_points),
+        ("attendance_points_mode", body.attendance_points_mode),
+        ("teacher_attendance_window_days", body.teacher_attendance_window_days),
+        ("streak_alert_days", body.streak_alert_days),
+    ):
+        if val is None:
+            continue
+        s = db.get(Setting, key) or Setting(key=key)
+        s.value = str(val)
+        db.add(s)
+    audit(db, admin, "settings.update", "settings")
+    db.commit()
+    return _settings(db)
