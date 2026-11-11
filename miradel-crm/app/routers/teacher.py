@@ -1,4 +1,5 @@
 """Oʻqituvchi: guruhlar, davomat, topshiriq/xabar berish, dars hisoboti. Oflayn navbat bilan ishlaydi."""
+import logging
 from datetime import date, timedelta
 from typing import List, Optional
 
@@ -14,6 +15,7 @@ from ..models import (Announcement, Attendance, ClientAction, Group, LessonRepor
 from .content import get_setting
 
 router = APIRouter(prefix="/api/teacher", tags=["teacher"])
+log = logging.getLogger("miradel")
 STATUS = r"^(present|absent|excused)$"
 
 
@@ -104,7 +106,7 @@ class TAction(BaseModel):
 
 
 class PushIn(BaseModel):
-    actions: List[TAction] = Field(max_length=100)
+    actions: List[TAction] = Field(max_length=500)
 
 
 def _own_group(db: Session, u: User, gid: int) -> Group:
@@ -185,4 +187,8 @@ def push(body: PushIn, u: User = Depends(require_teacher), db: Session = Depends
             db.rollback()
             msg = str(e) if isinstance(e, ValueError) else "Maʼlumot notoʻgʻri"
             results.append({"uid": a.uid, "status": "rejected", "error": msg})
+        except Exception:  # kutilmagan xato butun navbatni toʻxtatib qoʻymasin
+            db.rollback()
+            log.exception("teacher.push xatosi (teacher=%s, type=%s)", u.id, a.type)
+            results.append({"uid": a.uid, "status": "rejected", "error": "Server xatosi, administratorga xabar bering"})
     return {"results": results}
