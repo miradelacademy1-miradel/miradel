@@ -27,14 +27,16 @@ def gen_password(n: int = PASSWORD_LENGTH) -> str:
     return "".join(secrets.choice(string.digits) for _ in range(n))
 
 
-def make_token(uid: int) -> str:
+def make_token(uid: int, tv: int = 0) -> str:
     exp = datetime.now(timezone.utc) + timedelta(hours=TOKEN_HOURS)
-    return jwt.encode({"sub": str(uid), "exp": exp}, SECRET_KEY, algorithm="HS256")
+    return jwt.encode({"sub": str(uid), "tv": tv, "exp": exp}, SECRET_KEY, algorithm="HS256")
 
 
-def read_token(t: str) -> Optional[int]:
+def read_token(t: str) -> Optional[tuple]:
+    """(foydalanuvchi id, token versiyasi) yoki None."""
     try:
-        return int(jwt.decode(t, SECRET_KEY, algorithms=["HS256"])["sub"])
+        d = jwt.decode(t, SECRET_KEY, algorithms=["HS256"])
+        return int(d["sub"]), int(d.get("tv", 0))
     except Exception:
         return None
 
