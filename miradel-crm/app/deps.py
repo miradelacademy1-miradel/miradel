@@ -12,9 +12,9 @@ bearer = HTTPBearer(auto_error=False)
 def current_user(cred: HTTPAuthorizationCredentials = Depends(bearer), db: Session = Depends(get_db)) -> User:
     if not cred:
         raise HTTPException(401, "Kirish talab qilinadi")
-    uid = read_token(cred.credentials)
-    user = db.get(User, uid) if uid else None
-    if not user or not user.active:
+    parsed = read_token(cred.credentials)
+    user = db.get(User, parsed[0]) if parsed else None
+    if not user or not user.active or (user.token_version or 0) != parsed[1]:
         raise HTTPException(401, "Sessiya yaroqsiz")
     return user
 
