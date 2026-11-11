@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..audit import audit  # NOTE: replaced below in actual import block
 from ..db import get_db
 from ..finance import month_bounds, month_of, today_uz
 from ..invoices_service import generate_month
