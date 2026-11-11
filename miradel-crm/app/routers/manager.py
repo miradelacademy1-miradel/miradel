@@ -1,17 +1,22 @@
 """Menejer: moliya, oʻqituvchilar maoshi, ish rejasi, dars hisobotlari."""
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import current_user
-from ..finance import effective_fee, month_bounds, month_of, pay_status, today_uz
-from ..models import Group, Invoice, LessonReport, Payment, SalaryPayout, User, WorkPlan
+from ..finance import clamp_day, effective_fee, month_bounds, month_of, pay_status, today_uz
+from ..invoices_service import generate_month
+from ..models import (
+    Group, Invoice, LessonReport, Payment, SalaryAdjustment, SalaryPayout, User, WorkPlan
+)
 from ..pay_settings import load_pay_settings
+from ..receipts_service import generate_receipt_no
+from ..salary_service import get_salary_rows, get_salary_sheet
 from .admin import audit
 
 MONTH = r"^\d{4}-(0[1-9]|1[0-2])$"
@@ -82,6 +87,7 @@ class PayIn(BaseModel):
     note: str = Field(default="", max_length=200)
     paid_on: Optional[date] = None
     course: Optional[str] = Field(default=None, max_length=80)
+    allocate_oldest: bool = False
 
 
 def _pay_out(p: Payment) -> dict:
@@ -107,12 +113,62 @@ def add_payment(body: PayIn, me: User = Depends(finance_user), db: Session = Dep
         g = db.get(Group, s.group_id) if s.group_id else None
         course = (g.course if g and g.course else "")
 
-    p = Payment(student_id=s.id, month=body.month, amount=body.amount, method=body.method,
-                note=body.note.strip(), paid_on=paid_on, course=course[:80], created_by=me.id)
-    db.add(p)
-    audit(db, me, "payment.add", s.login, f"{body.month} {body.amount}")
+    created_payments = []
+    
+    if body.allocate_oldest:
+        remainder = body.amount
+        # Fetch unpaid invoices oldest first
+        unpaid_invoices = db.scalars(select(Invoice).where(Invoice.student_id == s.id, Invoice.waived.is_(False)).order_by(Invoice.month)).all()
+        for inv in unpaid_invoices:
+            if remainder <= 0:
+                break
+            # Calculate already paid for this month
+            already_paid = int(db.scalar(select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.student_id == s.id, Payment.month == inv.month, Payment.voided.is_(False))) or 0)
+            net_due = max(0, inv.amount_due - inv.discount)
+            left = net_due - already_paid
+            if left > 0:
+                alloc = min(left, remainder)
+                remainder -= alloc
+                p = Payment(
+                    student_id=s.id, month=inv.month, amount=alloc, method=body.method,
+                    note=body.note.strip(), paid_on=paid_on, course=course[:80], created_by=me.id
+                )
+                p.receipt_no = generate_receipt_no(db, paid_on)
+                db.add(p)
+                db.flush()
+                created_payments.append(p)
+        
+        if remainder > 0:
+            # leftover goes to the selected month
+            p = Payment(
+                student_id=s.id, month=body.month, amount=remainder, method=body.method,
+                note=body.note.strip(), paid_on=paid_on, course=course[:80], created_by=me.id
+            )
+            p.receipt_no = generate_receipt_no(db, paid_on)
+            db.add(p)
+            db.flush()
+            created_payments.append(p)
+    else:
+        p = Payment(
+            student_id=s.id, month=body.month, amount=body.amount, method=body.method,
+            note=body.note.strip(), paid_on=paid_on, course=course[:80], created_by=me.id
+        )
+        p.receipt_no = generate_receipt_no(db, paid_on)
+        db.add(p)
+        db.flush()
+        created_payments.append(p)
+
+    audit(db, me, "payment.add", s.login, f"{body.month} {body.amount} alloc={body.allocate_oldest}")
     db.commit()
-    return _pay_out(p)
+
+    if not created_payments:
+        raise HTTPException(400, "Toʻlov yaratilmadi")
+
+    first = created_payments[0]
+    out = _pay_out(first)
+    if body.allocate_oldest:
+        out["allocations"] = [{"month": p.month, "amount": p.amount, "payment_id": p.id} for p in created_payments]
+    return out
 
 
 @router.get("/payments")
@@ -132,6 +188,28 @@ def void_payment(pid: int, me: User = Depends(finance_user), db: Session = Depen
     return _pay_out(p)
 
 
+@router.get("/payments/{pid}/receipt")
+def payment_receipt(pid: int, db: Session = Depends(get_db)):
+    p = db.get(Payment, pid)
+    if not p:
+        raise HTTPException(404, "Topilmadi")
+    s = db.get(User, p.student_id)
+    g = db.get(Group, s.group_id) if s and s.group_id else None
+    cashier = db.get(User, p.created_by) if p.created_by else None
+    return {
+        "receipt_no": p.receipt_no or "—",
+        "student": s.full_name if s else "",
+        "group": g.name if g else "",
+        "month": p.month,
+        "amount": p.amount,
+        "method": p.method,
+        "paid_on": p.paid_on.isoformat(),
+        "cashier": cashier.full_name if cashier else "",
+        "note": p.note,
+        "voided": p.voided
+    }
+
+
 class FeeIn(BaseModel):
     monthly_fee: int = Field(ge=0, le=100_000_000)
     fee_day: Optional[int] = Field(default=None, ge=1, le=31)
@@ -145,7 +223,7 @@ def set_student_fee(sid: int, body: FeeIn, me: User = Depends(finance_user), db:
     s.monthly_fee = body.monthly_fee
     if body.fee_day:
         s.fee_day = body.fee_day
-        s.fee_day_origin = body.fee_day  # TZ-7 D: qoʻlda oʻzgartirish originni reset qiladi
+        s.fee_day_origin = body.fee_day
     audit(db, me, "fee.student", s.login, f"{body.monthly_fee}/{s.fee_day}")
     db.commit()
     return {"id": s.id, "monthly_fee": s.monthly_fee, "fee_day": s.fee_day}
@@ -166,81 +244,192 @@ def set_group_fee(gid: int, body: GroupFeeIn, me: User = Depends(finance_user), 
     return {"id": g.id, "monthly_fee": g.monthly_fee}
 
 
-# ---------- Maosh ----------
-def _salary_rows(db: Session, m: str):
-    first, nxt = month_bounds(m)
+# ---------- Invoices ----------
+@router.get("/invoices")
+def get_invoices(month: Optional[str] = None, student_id: Optional[int] = None, db: Session = Depends(get_db)):
+    stmt = select(Invoice).order_by(Invoice.month.desc(), Invoice.id.desc()).limit(1000)
+    if month:
+        stmt = stmt.where(Invoice.month == month)
+    if student_id:
+        stmt = stmt.where(Invoice.student_id == student_id)
+    invs = list(db.scalars(stmt))
+    users = {u.id: u for u in db.scalars(select(User).where(User.id.in_({i.student_id for i in invs})))}
+    groups = {g.id: g for g in db.scalars(select(Group))}
+    
+    return [{
+        "id": inv.id, "student_id": inv.student_id,
+        "student_name": users[inv.student_id].full_name if inv.student_id in users else "",
+        "group_name": groups[users[inv.student_id].group_id].name if inv.student_id in users and users[inv.student_id].group_id in groups else "",
+        "month": inv.month, "amount_due": inv.amount_due, "discount": inv.discount,
+        "discount_reason": inv.discount_reason, "waived": inv.waived,
+        "note": inv.note, "manual": inv.manual, "due_day": inv.due_day,
+        "net": 0 if inv.waived else max(0, inv.amount_due - inv.discount)
+    } for inv in invs]
+
+
+class InvPatch(BaseModel):
+    discount: Optional[int] = Field(default=None, ge=0)
+    discount_reason: Optional[str] = Field(default=None, max_length=200)
+    waived: Optional[bool] = None
+    note: Optional[str] = Field(default=None, max_length=200)
+
+
+@router.patch("/invoices/{iid}")
+def patch_invoice(iid: int, body: InvPatch, me: User = Depends(finance_user), db: Session = Depends(get_db)):
+    inv = db.get(Invoice, iid)
+    if not inv:
+        raise HTTPException(404, "Invoice topilmadi")
+    data = body.model_dump(exclude_unset=True)
+    
+    new_discount = data.get("discount", inv.discount)
+    new_waived = data.get("waived", inv.waived)
+    new_reason = data.get("discount_reason", inv.discount_reason) or ""
+    
+    if new_discount < 0 or new_discount > inv.amount_due:
+        raise HTTPException(400, "Chegirma 0..amount_due orasida boʻlsin")
+    if (new_discount > 0 or new_waived) and len(new_reason.strip()) < 3:
+        raise HTTPException(400, "Sabab kamida 3 belgi boʻlishi kerak")
+        
+    if "discount" in data: inv.discount = new_discount
+    if "discount_reason" in data: inv.discount_reason = new_reason
+    if "waived" in data: inv.waived = new_waived
+    if "note" in data: inv.note = (data["note"] or "")[:200]
+    inv.manual = True
+    
+    audit(db, me, "invoice.patch", f"{inv.student_id}:{inv.month}", ",".join(data.keys()))
+    db.commit()
+    return {"ok": True}
+
+
+class GenIn(BaseModel):
+    month: str = Field(pattern=MONTH)
+
+
+@router.post("/invoices/generate")
+def gen_invoices(body: GenIn, me: User = Depends(finance_user), db: Session = Depends(get_db)):
+    result = generate_month(db, body.month)
+    audit(db, me, "invoice.generate", body.month, str(result))
+    db.commit()
+    return result
+
+
+# ---------- Debts ----------
+@router.get("/debts")
+def get_debts(upto: Optional[str] = None, group_id: Optional[int] = None, q: Optional[str] = None, db: Session = Depends(get_db)):
+    m = upto or month_of(today_uz())
+    if len(m) != 7:
+        raise HTTPException(400, "Oy formati: YYYY-MM")
+
+    stmt = select(User).where(User.is_student.is_(True), User.active.is_(True))
+    if group_id:
+        stmt = stmt.where(User.group_id == group_id)
+    if q:
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(or_(User.full_name.ilike(like), User.phone.ilike(like)))
+        
+    students = list(db.scalars(stmt.order_by(User.full_name)))
+    groups = {g.id: g for g in db.scalars(select(Group))}
+    
     out = []
-    for t in db.scalars(select(User).where(User.is_teacher.is_(True), User.active.is_(True)).order_by(User.full_name)):
-        gids = [g.id for g in db.scalars(select(Group).where(Group.teacher_id == t.id))]
-        lessons = db.scalar(select(func.count()).select_from(
-            select(LessonReport.group_id, LessonReport.day).where(LessonReport.teacher_id == t.id, LessonReport.day >= first, LessonReport.day < nxt).distinct().subquery())) or 0
-        collected = 0
-        if gids and t.salary_mode == "percent":
-            collected = int(db.scalar(select(func.coalesce(func.sum(Payment.amount), 0)).join(User, User.id == Payment.student_id).where(
-                Payment.month == m, Payment.voided.is_(False), User.group_id.in_(gids))) or 0)
-        if t.salary_mode == "per_lesson":
-            amount = lessons * t.salary_rate
-        elif t.salary_mode == "percent":
-            amount = round(collected * t.salary_rate / 100)
-        else:
-            amount = t.salary_rate
-        paid = int(db.scalar(select(func.coalesce(func.sum(SalaryPayout.amount), 0)).where(SalaryPayout.teacher_id == t.id, SalaryPayout.month == m)) or 0)
-        out.append({"id": t.id, "full_name": t.full_name, "mode": t.salary_mode, "rate": t.salary_rate, "lessons": lessons,
-                    "collected": collected, "amount": amount, "paid": paid, "balance": amount - paid})
-    return out
+    for s in students:
+        invs = db.scalars(select(Invoice).where(Invoice.student_id == s.id, Invoice.month <= m).order_by(Invoice.month)).all()
+        if not invs:
+            continue
+            
+        months_data = []
+        total_left = 0
+        
+        paid_by_month = dict(db.execute(
+            select(Payment.month, func.sum(Payment.amount))
+            .where(Payment.student_id == s.id, Payment.voided.is_(False))
+            .group_by(Payment.month)
+        ).all())
+        
+        for inv in invs:
+            due = 0 if inv.waived else max(0, inv.amount_due - inv.discount)
+            paid = int(paid_by_month.get(inv.month, 0))
+            left = max(0, due - paid)
+            if left > 0:
+                months_data.append({"month": inv.month, "due": due, "paid": paid, "left": left})
+                total_left += left
+                
+        if total_left > 0:
+            g = groups.get(s.group_id)
+            out.append({
+                "student_id": s.id, "student": s.full_name, "group": g.name if g else "",
+                "phone": s.phone, "parent_phone": s.parent_phone,
+                "months": months_data, "total_left": total_left
+            })
+            
+    out.sort(key=lambda x: x["total_left"], reverse=True)
+    totals = sum(x["total_left"] for x in out)
+    
+    return {"upto": m, "rows": out, "total_left": totals}
 
 
+# ---------- Maosh ----------
 @router.get("/salary")
 def salary(month: Optional[str] = None, db: Session = Depends(get_db)):
     m = _month(month)
-    rows = _salary_rows(db, m)
-    return {"month": m, "rows": rows, "totals": {"amount": sum(r["amount"] for r in rows), "paid": sum(r["paid"] for r in rows),
-                                                  "balance": sum(r["balance"] for r in rows)}}
+    rows = get_salary_rows(db, m)
+    return {
+        "month": m, "rows": rows,
+        "totals": {
+            "amount": sum(r["amount"] for r in rows),
+            "paid": sum(r["paid"] for r in rows),
+            "balance": sum(r["balance"] for r in rows),
+            "adjustments": sum(r["adjustments"] for r in rows),
+            "amount_total": sum(r["amount_total"] for r in rows),
+            "balance_total": sum(r["balance_total"] for r in rows)
+        }
+    }
 
 
-class SalarySet(BaseModel):
-    salary_mode: str = Field(pattern=r"^(per_lesson|percent|fixed)$")
-    salary_rate: int = Field(ge=0, le=100_000_000)
-
-
-@router.patch("/teachers/{tid}/salary")
-def set_salary(tid: int, body: SalarySet, me: User = Depends(finance_user), db: Session = Depends(get_db)):
-    t = db.get(User, tid)
-    if not t or not t.is_teacher:
+@router.get("/salary/sheet")
+def salary_sheet(teacher_id: int, month: str, db: Session = Depends(get_db)):
+    if len(month) != 7:
+        raise HTTPException(400, "Oy formati: YYYY-MM")
+    sheet = get_salary_sheet(db, teacher_id, month)
+    if not sheet:
         raise HTTPException(404, "Oʻqituvchi topilmadi")
-    if body.salary_mode == "percent" and body.salary_rate > 100:
-        raise HTTPException(400, "Foiz 100 dan oshmasligi kerak")
-    t.salary_mode, t.salary_rate = body.salary_mode, body.salary_rate
-    audit(db, me, "salary.set", t.login, f"{body.salary_mode}={body.salary_rate}")
-    db.commit()
-    return {"id": t.id, "salary_mode": t.salary_mode, "salary_rate": t.salary_rate}
+    return sheet
 
 
-class PayoutIn(BaseModel):
+class AdjIn(BaseModel):
     teacher_id: int
     month: str = Field(pattern=MONTH)
-    amount: int = Field(ge=1, le=100_000_000)
-    note: str = Field(default="", max_length=200)
+    amount: int = Field(...)
+    reason: str = Field(min_length=3, max_length=200)
 
+@router.get("/salary/adjustments")
+def list_adjustments(teacher_id: int, month: str, db: Session = Depends(get_db)):
+    rows = db.scalars(select(SalaryAdjustment).where(
+        SalaryAdjustment.teacher_id == teacher_id, SalaryAdjustment.month == month
+    ).order_by(SalaryAdjustment.id.desc())).all()
+    return [{"id": a.id, "amount": a.amount, "reason": a.reason, "voided": a.voided, "date": a.created_at.isoformat()} for a in rows]
 
-@router.post("/salary/payouts")
-def payout(body: PayoutIn, me: User = Depends(finance_user), db: Session = Depends(get_db)):
+@router.post("/salary/adjustments")
+def add_adjustment(body: AdjIn, me: User = Depends(finance_user), db: Session = Depends(get_db)):
     t = db.get(User, body.teacher_id)
     if not t or not t.is_teacher:
         raise HTTPException(404, "Oʻqituvchi topilmadi")
-    p = SalaryPayout(teacher_id=t.id, month=body.month, amount=body.amount, note=body.note.strip(), paid_on=today_uz(), created_by=me.id)
-    db.add(p)
-    audit(db, me, "salary.payout", t.login, f"{body.month} {body.amount}")
+    a = SalaryAdjustment(
+        teacher_id=body.teacher_id, month=body.month, amount=body.amount, reason=body.reason.strip(), created_by=me.id
+    )
+    db.add(a)
+    audit(db, me, "salary.adjustment", t.login, f"{body.month} {body.amount} {body.reason}")
     db.commit()
-    return {"id": p.id, "amount": p.amount, "month": p.month, "paid_on": p.paid_on.isoformat(), "note": p.note}
+    return {"id": a.id}
 
-
-@router.get("/salary/payouts")
-def payouts(teacher_id: int, month: Optional[str] = None, db: Session = Depends(get_db)):
-    stmt = select(SalaryPayout).where(SalaryPayout.teacher_id == teacher_id).order_by(SalaryPayout.id.desc()).limit(50)
-    if month:
-        stmt = stmt.where(SalaryPayout.month == month)
-    return [{"id": p.id, "amount": p.amount, "month": p.month, "paid_on": p.paid_on.isoformat(), "note": p.note} for p in db.scalars(stmt)]
+@router.post("/salary/adjustments/{aid}/void")
+def void_adjustment(aid: int, me: User = Depends(finance_user), db: Session = Depends(get_db)):
+    a = db.get(SalaryAdjustment, aid)
+    if not a:
+        raise HTTPException(404, "Topilmadi")
+    a.voided = True
+    audit(db, me, "salary.adjustment.void", str(a.id))
+    db.commit()
+    return {"ok": True}
 
 
 # ---------- Ish rejasi ----------
