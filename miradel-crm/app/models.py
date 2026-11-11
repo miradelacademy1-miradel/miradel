@@ -19,7 +19,7 @@ class Group(Base):
     name: Mapped[str] = mapped_column(String(60), unique=True)
     course: Mapped[str] = mapped_column(String(80), default="")
     level: Mapped[str] = mapped_column(String(60), default="")
-    days: Mapped[str] = mapped_column(String(7), default="", server_default=text("''"))  # dars kunlari: 1=Du ... 7=Yak, masalan "135"
+    days: Mapped[str] = mapped_column(String(7), default="", server_default=text("''"))
     lesson_time: Mapped[str] = mapped_column(String(10), default="", server_default=text("''"))
     monthly_fee: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     teacher_id: Mapped[Optional[int]] = mapped_column(
@@ -45,10 +45,9 @@ class User(Base):
     level: Mapped[str] = mapped_column(String(60), default="")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
-    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))  # oshirilsa eski tokenlar yaroqsiz boʻladi
-    monthly_fee: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))   # oʻquvchi: individual oylik narx (0 = guruh narxi)
-    fee_day: Mapped[int] = mapped_column(Integer, default=10, server_default=text("10"))     # oʻquvchi: har oy toʻlov kuni
-    salary_mode: Mapped[str] = mapped_column(String(12), default="per_lesson", server_default=text("'per_lesson'"))  # per_lesson|percent|fixed
+    monthly_fee: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    fee_day: Mapped[int] = mapped_column(Integer, default=10, server_default=text("10"))
+    salary_mode: Mapped[str] = mapped_column(String(12), default="per_lesson", server_default=text("'per_lesson'"))
     salary_rate: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
@@ -79,8 +78,8 @@ class Task(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     title: Mapped[str] = mapped_column(String(160))
     body: Mapped[str] = mapped_column(Text, default="")
-    kind: Mapped[str] = mapped_column(String(20), default="daily")  # daily|weekly|monthly|artifact|material
-    level: Mapped[str] = mapped_column(String(60), default="")      # boʻsh = hamma daraja
+    kind: Mapped[str] = mapped_column(String(20), default="daily")
+    level: Mapped[str] = mapped_column(String(60), default="")
     group_id: Mapped[Optional[int]] = mapped_column(ForeignKey("groups.id"), nullable=True)
     points: Mapped[int] = mapped_column(Integer, default=0)
     due_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
@@ -107,7 +106,7 @@ class PointsLedger(Base):
     __tablename__ = "points_ledger"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    source: Mapped[str] = mapped_column(String(30))  # task | attendance | manual
+    source: Mapped[str] = mapped_column(String(30))
     ref_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     points: Mapped[int] = mapped_column(Integer)
     note: Mapped[str] = mapped_column(String(200), default="")
@@ -148,9 +147,76 @@ class Attendance(Base):
     group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), index=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     day: Mapped[date] = mapped_column(Date, index=True)
-    status: Mapped[str] = mapped_column(String(10))  # present | absent | excused
+    status: Mapped[str] = mapped_column(String(10))
     marked_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    off_schedule: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    source: Mapped[str] = mapped_column(String(10), default="teacher", server_default=text("'teacher'"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class AttendanceLog(Base):
+    __tablename__ = "attendance_log"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), index=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    old_status: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    new_status: Mapped[str] = mapped_column(String(10))
+    by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    source: Mapped[str] = mapped_column(String(10), default="teacher")
+    reason: Mapped[str] = mapped_column(String(200), default="", server_default=text("''"))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+
+
+class AttendanceBatch(Base):
+    __tablename__ = "attendance_batches"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    teacher_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    present: Mapped[int] = mapped_column(Integer, default=0)
+    absent: Mapped[int] = mapped_column(Integer, default=0)
+    excused: Mapped[int] = mapped_column(Integer, default=0)
+    all_present: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String(10), default="teacher")
+    client_uid: Mapped[str] = mapped_column(String(60), default="", server_default=text("''"))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
+
+
+class LessonException(Base):
+    __tablename__ = "lesson_exceptions"
+    __table_args__ = (UniqueConstraint("day", "group_id", "kind", name="uq_lesson_exception"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    group_id: Mapped[Optional[int]] = mapped_column(ForeignKey("groups.id"), nullable=True)
+    kind: Mapped[str] = mapped_column(String(10))  # holiday|cancelled|extra
+    note: Mapped[str] = mapped_column(String(200), default="", server_default=text("''"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class GroupSubstitution(Base):
+    __tablename__ = "group_substitutions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), index=True)
+    teacher_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    from_day: Mapped[date] = mapped_column(Date)
+    to_day: Mapped[date] = mapped_column(Date)
+    reason: Mapped[str] = mapped_column(String(200), default="", server_default=text("''"))
+    created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AbsenceFollowup(Base):
+    __tablename__ = "absence_followups"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    day: Mapped[date] = mapped_column(Date, index=True)
+    status: Mapped[str] = mapped_column(String(20))  # called|no_answer|parent_excused|note
+    note: Mapped[str] = mapped_column(String(300), default="", server_default=text("''"))
+    by_user_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
 
 
 class LessonReport(Base):
@@ -165,7 +231,6 @@ class LessonReport(Base):
 
 
 class ClientAction(Base):
-    """Oflayn navbatdan kelgan harakatlar takrorlanmasligi uchun."""
     __tablename__ = "client_actions"
     uid: Mapped[str] = mapped_column(String(60), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
@@ -176,9 +241,9 @@ class Payment(Base):
     __tablename__ = "payments"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     student_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    month: Mapped[str] = mapped_column(String(7), index=True)  # qaysi oy uchun: YYYY-MM
+    month: Mapped[str] = mapped_column(String(7), index=True)
     amount: Mapped[int] = mapped_column(Integer)
-    method: Mapped[str] = mapped_column(String(10), default="cash")  # cash|card|transfer
+    method: Mapped[str] = mapped_column(String(10), default="cash")
     note: Mapped[str] = mapped_column(String(200), default="")
     paid_on: Mapped[date] = mapped_column(Date)
     voided: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -204,7 +269,7 @@ class WorkPlan(Base):
     teacher_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     title: Mapped[str] = mapped_column(String(200))
     due_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
-    status: Mapped[str] = mapped_column(String(10), default="todo")  # todo|done|cancelled
+    status: Mapped[str] = mapped_column(String(10), default="todo")
     done_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -214,8 +279,8 @@ class WorkPlan(Base):
 class ChatThread(Base):
     __tablename__ = "chat_threads"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    key: Mapped[str] = mapped_column(String(40), unique=True, index=True)  # "g:<guruh>" yoki "d:<oʻquvchi>:<oʻqituvchi>"
-    kind: Mapped[str] = mapped_column(String(8))  # group | direct
+    key: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(8))
     group_id: Mapped[Optional[int]] = mapped_column(ForeignKey("groups.id"), nullable=True)
     student_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
     teacher_id: Mapped[Optional[int]] = mapped_column(ForeignKey("users.id"), nullable=True)
