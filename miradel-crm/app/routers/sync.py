@@ -1,4 +1,5 @@
 """Oʻquvchi ilovasi uchun sinxronlash: pull (snapshot) va push (oflayn harakatlar)."""
+import logging
 from datetime import timedelta
 from typing import List
 
@@ -14,6 +15,7 @@ from ..models import (Announcement, Artifact, Attendance, Group, Payment, Points
 from .content import get_setting
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
+log = logging.getLogger("miradel")
 
 
 def student_only(u: User = Depends(current_user)) -> User:
@@ -22,16 +24,24 @@ def student_only(u: User = Depends(current_user)) -> User:
     return u
 
 
-def visible(u: User, t: Task) -> bool:
+def eff_level(u: User, group) -> str:
+    """Oʻquvchining amaldagi darajasi: oʻz darajasi, boʻlmasa guruh darajasi."""
+    return (u.level or (group.level if group else "") or "").strip()
+
+
+def visible(u: User, t: Task, level: str) -> bool:
     if not t.active:
         return False
     if t.group_id:
         return t.group_id == u.group_id
-    return (not t.level) or t.level == u.level
+    return (not (t.level or "").strip()) or t.level.strip().lower() == level.lower()
 
 
-def _task_filter(u: User):
-    conds = [and_(Task.group_id.is_(None), or_(Task.level == "", Task.level == u.level))]
+def _task_filter(u: User, level: str):
+    lvl = [Task.level == ""]
+    if level:
+        lvl.append(func.lower(func.trim(Task.level)) == level.lower())
+    conds = [and_(Task.group_id.is_(None), or_(*lvl))]
     if u.group_id:
         conds.append(Task.group_id == u.group_id)
     return or_(*conds)
@@ -54,7 +64,7 @@ def pull(u: User = Depends(student_only), db: Session = Depends(get_db)):
     subs = {s.task_id: s for s in db.scalars(select(Submission).where(Submission.student_id == u.id))}
     tasks = [{"id": t.id, "title": t.title, "body": t.body, "kind": t.kind, "points": t.points,
               "due_date": t.due_date.isoformat() if t.due_date else None, "artifact_id": t.artifact_id,
-              "done": t.id in subs} for t in db.scalars(select(Task).where(Task.active.is_(True), _task_filter(u)).order_by(Task.id.desc()).limit(300))]
+              "done": t.id in subs} for t in db.scalars(select(Task).where(Task.active.is_(True), _task_filter(u, eff_level(u, group))).order_by(Task.id.desc()).limit(300))]
 
     ann_filter = Announcement.group_id.is_(None) if not u.group_id else or_(Announcement.group_id.is_(None), Announcement.group_id == u.group_id)
     anns = [{"id": a.id, "title": a.title, "body": a.body}
@@ -108,28 +118,36 @@ class Action(BaseModel):
 
 
 class PushIn(BaseModel):
-    actions: List[Action] = Field(max_length=100)
+    actions: List[Action] = Field(max_length=500)
 
 
 @router.post("/push")
 def push(body: PushIn, u: User = Depends(student_only), db: Session = Depends(get_db)):
     results = []
+    group = db.get(Group, u.group_id) if u.group_id else None
+    level = eff_level(u, group)
     for a in body.actions:
-        if a.type != "complete":
-            results.append({"uid": a.uid, "status": "rejected", "error": "Nomaʼlum harakat"})
-            continue
-        t = db.get(Task, a.task_id)
-        if not t or not visible(u, t) or t.kind == "material":
-            results.append({"uid": a.uid, "status": "rejected", "error": "Topshiriq mavjud emas"})
-            continue
-        if db.scalar(select(Submission.id).where(Submission.task_id == t.id, Submission.student_id == u.id)):
-            results.append({"uid": a.uid, "status": "duplicate"})
-            continue
-        db.add(Submission(task_id=t.id, student_id=u.id, answer=a.answer.strip(), points_awarded=t.points, client_uid=a.uid))
-        if t.points:
-            db.add(PointsLedger(student_id=u.id, source="task", ref_id=t.id, points=t.points, note=t.title[:200]))
-        if t.artifact_id and not db.scalar(select(UserArtifact.id).where(UserArtifact.student_id == u.id, UserArtifact.artifact_id == t.artifact_id)):
-            db.add(UserArtifact(student_id=u.id, artifact_id=t.artifact_id))
-        db.commit()
-        results.append({"uid": a.uid, "status": "ok"})
+        try:
+            results.append(_one(db, u, a, level))
+        except Exception:  # bitta harakatdagi kutilmagan xato butun navbatni toʻxtatib qoʻymasin
+            db.rollback()
+            log.exception("sync.push xatosi (student=%s, task=%s)", u.id, a.task_id)
+            results.append({"uid": a.uid, "status": "rejected", "error": "Server xatosi, administratorga xabar bering"})
     return {"results": results}
+
+
+def _one(db: Session, u: User, a: Action, level: str) -> dict:
+    if a.type != "complete":
+        return {"uid": a.uid, "status": "rejected", "error": "Nomaʼlum harakat"}
+    t = db.get(Task, a.task_id)
+    if not t or not visible(u, t, level) or t.kind == "material":
+        return {"uid": a.uid, "status": "rejected", "error": "Topshiriq mavjud emas"}
+    if db.scalar(select(Submission.id).where(Submission.task_id == t.id, Submission.student_id == u.id)):
+        return {"uid": a.uid, "status": "duplicate"}
+    db.add(Submission(task_id=t.id, student_id=u.id, answer=a.answer.strip(), points_awarded=t.points, client_uid=a.uid))
+    if t.points:
+        db.add(PointsLedger(student_id=u.id, source="task", ref_id=t.id, points=t.points, note=t.title[:200]))
+    if t.artifact_id and not db.scalar(select(UserArtifact.id).where(UserArtifact.student_id == u.id, UserArtifact.artifact_id == t.artifact_id)):
+        db.add(UserArtifact(student_id=u.id, artifact_id=t.artifact_id))
+    db.commit()
+    return {"uid": a.uid, "status": "ok"}
