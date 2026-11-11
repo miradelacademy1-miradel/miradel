@@ -34,7 +34,7 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
         fail(key)
         raise HTTPException(401, "Login yoki parol notoʻgʻri")
     clear(key)
-    return {"token": make_token(user.id), "user": user_out(user)}
+    return {"token": make_token(user.id, user.token_version or 0), "user": user_out(user)}
 
 
 @router.get("/me")
