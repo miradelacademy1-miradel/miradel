@@ -16,6 +16,7 @@ from .config import ADMIN_LOGIN, ADMIN_PASSWORD, ENV
 from .db import SessionLocal
 from .finance import month_of, today_uz
 from .migrate import ensure_schema
+from .receipts_service import backfill_receipts
 from .routers import admin, appinfo, attendance, auth, chat, content, export, invoices, manager, payment_settings, reports, sync, teacher
 from .security import hash_password
 
@@ -53,6 +54,8 @@ async def invoice_generator_task():
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     ensure_schema()
+    with SessionLocal() as db:
+        backfill_receipts(db)
     seed_admin()
     task = asyncio.create_task(invoice_generator_task())
     try:
