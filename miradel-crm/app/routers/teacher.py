@@ -1,42 +1,82 @@
 """Oʻqituvchi: guruhlar, davomat, topshiriq/xabar berish, dars hisoboti. Oflayn navbat bilan ishlaydi."""
-import logging
 from datetime import date, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from ..attendance_service import (
+    apply_marks, is_substitute_today,
+)
 from ..db import get_db
 from ..deps import require_teacher
 from ..finance import today_uz
-from ..models import (Announcement, Attendance, ClientAction, Group, LessonReport, PointsLedger, Task, User, WorkPlan, now)
+from ..models import (Announcement, Attendance, ClientAction, Group, GroupSubstitution, LessonException,
+                      LessonReport, PointsLedger, Task, User, WorkPlan, now)
 from .content import get_setting
 
 router = APIRouter(prefix="/api/teacher", tags=["teacher"])
-log = logging.getLogger("miradel")
 STATUS = r"^(present|absent|excused)$"
 
 
 def my_groups(db: Session, u: User):
-    return list(db.scalars(select(Group).where(Group.teacher_id == u.id, Group.active.is_(True)).order_by(Group.name)))
+    """Own active groups + groups where u is active substitute today."""
+    own = list(db.scalars(select(Group).where(Group.teacher_id == u.id, Group.active.is_(True)).order_by(Group.name)))
+    own_ids = {g.id for g in own}
+    today = today_uz()
+    sub_ids = [s.group_id for s in db.scalars(select(GroupSubstitution).where(
+        GroupSubstitution.teacher_id == u.id,
+        GroupSubstitution.from_day <= today,
+        GroupSubstitution.to_day >= today,
+    )) if s.group_id not in own_ids]
+    subs = list(db.scalars(select(Group).where(Group.id.in_(sub_ids), Group.active.is_(True)).order_by(Group.name))) if sub_ids else []
+    return own, subs
+
+
+def _find_own_or_substitute(db: Session, u: User, gid: int):
+    g = db.get(Group, gid)
+    if not g or not g.active:
+        return None
+    if g.teacher_id == u.id:
+        return g
+    today = today_uz()
+    if is_substitute_today(db, g, u.id, today):
+        return g
+    return None
+
+
+def _find_own_or_substitute_on(db: Session, u: User, gid: int, day: date):
+    g = db.get(Group, gid)
+    if not g or not g.active:
+        return None
+    if g.teacher_id == u.id:
+        return g
+    if is_substitute_today(db, g, u.id, day):
+        return g
+    return None
 
 
 @router.get("/pull")
 def pull(u: User = Depends(require_teacher), db: Session = Depends(get_db)):
-    groups = my_groups(db, u)
-    ids = [g.id for g in groups]
+    own, subs = my_groups(db, u)
+    own_ids = {g.id for g in own}
+    all_groups = own + subs
+    ids = [g.id for g in all_groups]
+
     studs = {}
     if ids:
         for s in db.scalars(select(User).where(User.is_student.is_(True), User.active.is_(True), User.group_id.in_(ids)).order_by(User.full_name)):
             studs.setdefault(s.group_id, []).append({"id": s.id, "full_name": s.full_name, "login": s.login})
+
     att = {}
     if ids:
         since = now().date() - timedelta(days=14)
         for a in db.scalars(select(Attendance).where(Attendance.group_id.in_(ids), Attendance.day >= since)):
             att.setdefault(f"{a.group_id}|{a.day.isoformat()}", {})[str(a.student_id)] = a.status
-    gname = {g.id: g.name for g in groups}
+
+    gname = {g.id: g.name for g in all_groups}
     tasks = [{"id": t.id, "title": t.title, "kind": t.kind, "points": t.points, "group_id": t.group_id,
               "group_name": gname.get(t.group_id, ""), "due_date": t.due_date.isoformat() if t.due_date else None, "active": t.active}
              for t in db.scalars(select(Task).where(Task.created_by == u.id).order_by(Task.id.desc()).limit(50))]
@@ -46,16 +86,23 @@ def pull(u: User = Depends(require_teacher), db: Session = Depends(get_db)):
             for a in db.scalars(select(Announcement).where(Announcement.created_by == u.id).order_by(Announcement.id.desc()).limit(20))]
     plans = [{"id": p.id, "title": p.title, "due_date": p.due_date.isoformat() if p.due_date else None, "status": p.status}
              for p in db.scalars(select(WorkPlan).where(WorkPlan.teacher_id == u.id, WorkPlan.status != "cancelled").order_by(WorkPlan.id.desc()).limit(50))]
+
+    groups_out = []
+    for g in all_groups:
+        groups_out.append({
+            "id": g.id, "name": g.name, "course": g.course, "level": g.level, "days": g.days,
+            "lesson_time": g.lesson_time, "students": studs.get(g.id, []),
+            "substitute": g.id not in own_ids,
+        })
+
     return {
         "server_time": now().isoformat(), "today": today_uz().isoformat(),
         "me": {"id": u.id, "full_name": u.full_name, "login": u.login, "is_manager": u.is_manager},
-        "groups": [{"id": g.id, "name": g.name, "course": g.course, "level": g.level, "days": g.days,
-                    "lesson_time": g.lesson_time, "students": studs.get(g.id, [])} for g in groups],
+        "groups": groups_out,
         "attendance": att, "tasks": tasks, "reports": reports, "announcements": anns, "plans": plans,
     }
 
 
-# ---------- Oflayn navbat ----------
 class Rec(BaseModel):
     student_id: int
     status: str = Field(pattern=STATUS)
@@ -106,49 +153,38 @@ class TAction(BaseModel):
 
 
 class PushIn(BaseModel):
-    actions: List[TAction] = Field(max_length=500)
-
-
-def _own_group(db: Session, u: User, gid: int) -> Group:
-    g = db.get(Group, gid)
-    if not g or g.teacher_id != u.id or not g.active:
-        raise ValueError("Bu guruh sizga biriktirilmagan")
-    return g
+    actions: List[TAction] = Field(max_length=100)
 
 
 def _do(db: Session, u: User, a: TAction):
     t = a.type
     if t == "attendance":
         d = AttendanceData(**a.data)
-        g = _own_group(db, u, d.group_id)
+        g = _find_own_or_substitute_on(db, u, d.group_id, d.date)
+        if not g:
+            raise ValueError("Bu guruh sizga biriktirilmagan")
         today = today_uz()
-        if d.date > today + timedelta(days=1) or d.date < today - timedelta(days=30):
-            raise ValueError("Sana yaroqsiz (kelajak yoki 30 kundan eski)")
-        pp = int(get_setting(db, "attendance_points", "2"))
-        ok_ids = {s.id for s in db.scalars(select(User).where(User.is_student.is_(True), User.group_id == g.id))}
-        for r in d.records:
-            if r.student_id not in ok_ids:
-                continue
-            row = db.scalar(select(Attendance).where(Attendance.group_id == g.id, Attendance.student_id == r.student_id, Attendance.day == d.date))
-            if row and row.status == r.status:
-                continue
-            if row:
-                for old in db.scalars(select(PointsLedger).where(PointsLedger.source == "attendance", PointsLedger.ref_id == row.id)):
-                    db.delete(old)
-                row.status, row.marked_by = r.status, u.id
-            else:
-                row = Attendance(group_id=g.id, student_id=r.student_id, day=d.date, status=r.status, marked_by=u.id)
-                db.add(row)
-                db.flush()
-            if r.status == "present" and pp:
-                db.add(PointsLedger(student_id=r.student_id, source="attendance", ref_id=row.id, points=pp, note=f"Davomat {d.date.isoformat()}"))
+        window = int(get_setting(db, "teacher_attendance_window_days", "30"))
+        if d.date > today + timedelta(days=1) or d.date < today - timedelta(days=window):
+            raise ValueError(f"Sana yaroqsiz (kelajak yoki {window} kundan eski)")
+        hol = db.scalar(select(LessonException.id).where(
+            LessonException.day == d.date,
+            LessonException.kind.in_(["holiday", "cancelled"]),
+            or_(LessonException.group_id == g.id, LessonException.group_id.is_(None)),
+        ))
+        if hol:
+            raise ValueError("Bu kun dam olish kuni sifatida belgilangan")
+        apply_marks(db, u, g, d.date, d.records, source="teacher", client_uid=a.uid)
     elif t == "report":
         d = ReportData(**a.data)
-        _own_group(db, u, d.group_id)
+        if not _find_own_or_substitute_on(db, u, d.group_id, d.date):
+            raise ValueError("Bu guruh sizga biriktirilmagan")
         db.add(LessonReport(group_id=d.group_id, teacher_id=u.id, day=d.date, topic=d.topic.strip(), notes=d.notes.strip()))
     elif t == "task":
         d = TaskData(**a.data)
-        g = _own_group(db, u, d.group_id)
+        g = _find_own_or_substitute(db, u, d.group_id)
+        if not g:
+            raise ValueError("Bu guruh sizga biriktirilmagan")
         db.add(Task(title=d.title.strip(), body=d.body, kind=d.kind, level="", group_id=g.id, points=d.points, due_date=d.due_date, created_by=u.id))
     elif t == "task_active":
         d = TaskActiveData(**a.data)
@@ -165,7 +201,8 @@ def _do(db: Session, u: User, a: TAction):
         plan.done_at = now() if d.done else None
     elif t == "announcement":
         d = AnnData(**a.data)
-        _own_group(db, u, d.group_id)
+        if not _find_own_or_substitute(db, u, d.group_id):
+            raise ValueError("Bu guruh sizga biriktirilmagan")
         db.add(Announcement(title=d.title.strip(), body=d.body, group_id=d.group_id, created_by=u.id))
     else:
         raise ValueError("Nomaʼlum harakat")
@@ -187,8 +224,4 @@ def push(body: PushIn, u: User = Depends(require_teacher), db: Session = Depends
             db.rollback()
             msg = str(e) if isinstance(e, ValueError) else "Maʼlumot notoʻgʻri"
             results.append({"uid": a.uid, "status": "rejected", "error": msg})
-        except Exception:  # kutilmagan xato butun navbatni toʻxtatib qoʻymasin
-            db.rollback()
-            log.exception("teacher.push xatosi (teacher=%s, type=%s)", u.id, a.type)
-            results.append({"uid": a.uid, "status": "rejected", "error": "Server xatosi, administratorga xabar bering"})
     return {"results": results}
