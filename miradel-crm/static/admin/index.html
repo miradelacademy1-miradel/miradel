@@ -44,6 +44,9 @@ details summary{cursor:pointer;font-weight:700;font-size:1.05rem}
 .stu-select input{width:auto;margin-right:8px}
 .bulk-bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;background:var(--bg);padding:10px;border-radius:10px;margin-bottom:10px}
 .bulk-bar input{width:120px}
+.stat-card{background:var(--bg);padding:16px;border-radius:12px;text-align:center}
+.stat-val{font-size:24px;font-weight:800;color:var(--acc)}
+@media print{.noprint{display:none!important}#pc{display:block!important}#pc .lcard{margin:0;border:2px solid #000;background:#fff;color:#000}}
 </style>
 </head>
 <body>
@@ -55,7 +58,8 @@ details summary{cursor:pointer;font-weight:700;font-size:1.05rem}
 <div id="main" class="wrap" hidden>
  <div class="top"><h1>Miradel boshqaruv</h1><span id="me" style="color:var(--mute)"></span><a class="btn g" href="/panel/" style="text-decoration:none">Menejer paneli</a><button class="btn g" id="out">Chiqish</button></div>
  <div class="tabs" id="tabs">
-  <button data-t="stu" class="on">Oʻquvchilar</button>
+  <button data-t="dash" class="on">Bosh sahifa</button>
+  <button data-t="stu">Oʻquvchilar</button>
   <button data-t="stf">Xodimlar</button>
   <button data-t="grp">Guruhlar</button>
   <button data-t="tsk">Topshiriqlar</button>
@@ -63,6 +67,7 @@ details summary{cursor:pointer;font-weight:700;font-size:1.05rem}
   <button data-t="art">Artifaktlar</button>
   <button data-t="cht">Chat nazorati</button>
   <button data-t="pay">Toʻlov sozlamalari</button>
+  <button data-t="rep">Hisobotlar</button>
  </div>
  <div id="v"></div>
 </div>
@@ -72,7 +77,7 @@ details summary{cursor:pointer;font-weight:700;font-size:1.05rem}
 <script>
 (function(){
 var $=function(s){return document.querySelector(s)};
-var T=localStorage.getItem("mt")||"",tab="stu",G=[],STF=[],last=null;
+var T=localStorage.getItem("mt")||"",tab="dash",G=[],STF=[],last=null;
 function esc(s){var d=document.createElement("div");d.textContent=s==null?"":s;return d.innerHTML}
 function toast(t){var e=$("#toast");e.textContent=t;e.classList.add("on");clearTimeout(toast.x);toast.x=setTimeout(function(){e.classList.remove("on")},2600)}
 function api(p,o){o=o||{};var h={"Content-Type":"application/json"};if(T)h.Authorization="Bearer "+T;
@@ -91,7 +96,99 @@ $("#tabs").onclick=function(e){var b=e.target.closest("button");if(!b)return;tab
 function opts(list,sel,empty){return '<option value="">'+empty+"</option>"+list.map(function(g){return '<option value="'+g.id+'"'+(g.id===sel?" selected":"")+">"+esc(g.name||g.full_name)+"</option>"}).join("")}
 function card(u,pwd){var h='<div class="lcard"><b>Miradel Academy</b><small>'+esc(u.full_name)+'</small><small>Login</small><code>'+esc(u.login)+'</code><small>Parol</small><code>'+esc(pwd)+'</code><small>Parolni hech kimga bermang. Ilova: sayt manzili yoki APK</small></div>';$("#pc").innerHTML=h;return h+'<p><button class="btn" id="prn">Kartochkani chop etish</button> <small style="color:var(--mute)">Parol faqat hozir koʻrinadi</small></p>'}
 function bindCard(){var p=$("#prn");if(p)p.onclick=function(){window.print()}}
-function show(){Promise.all([api("/admin/groups"),api("/admin/staff")]).then(function(r){G=r[0];STF=r[1];({stu:stu,stf:stf,grp:grp,tsk:tsk,ann:ann,art:art,cht:cht,pay:pay})[tab]()}).catch(fail)}
+function show(){Promise.all([api("/admin/groups"),api("/admin/staff")]).then(function(r){G=r[0];STF=r[1];({dash:dash,stu:stu,stf:stf,grp:grp,tsk:tsk,ann:ann,art:art,cht:cht,pay:pay,rep:rep})[tab]()}).catch(fail)}
+
+// ================== TZ-3: DASHBOARD ==================
+function dash(){
+  $("#v").innerHTML = "Yuklanmoqda...";
+  api("/reports/dashboard").then(function(d){
+    var missHtml = d.attendance_today.missing.map(function(m){
+      return '<tr><td>'+esc(m.group)+'</td><td>'+esc(m.teacher||"—")+'</td></tr>';
+    }).join("") || '<tr><td colspan="2" class="sub">Bugun barcha darslar belgilangan ✅</td></tr>';
+    
+    var inactHtml = d.inactive_teachers.map(function(t){
+      return '<tr><td>'+esc(t.teacher)+'</td><td>'+esc(t.last_report_day||"—")+'</td></tr>';
+    }).join("") || '<tr><td colspan="2" class="sub">Faol oʻqituvchilar</td></tr>';
+
+    $("#v").innerHTML = '<h2>Bugun — '+d.today+'</h2>' +
+      '<div class="row" style="margin-bottom:20px">' +
+        '<div class="stat-card" style="flex:1"><div class="stat-val">'+d.students.active+'</div><div class="sub">Faol oʻquvchilar</div></div>' +
+        '<div class="stat-card" style="flex:1"><div class="stat-val">'+d.groups.active+'</div><div class="sub">Faol guruhlar</div></div>' +
+        '<div class="stat-card" style="flex:1"><div class="stat-val" style="color:var(--ok)">'+d.attendance_today.marked+'</div><div class="sub">Davomat belgilangan</div></div>' +
+        '<div class="stat-card" style="flex:1"><div class="stat-val" style="color:var(--bad)">'+d.attendance_today.missing.length+'</div><div class="sub">Belgilanmagan</div></div>' +
+        '<div class="stat-card" style="flex:1"><div class="stat-val">'+d.payments_this_month.collected+'</div><div class="sub">Tushum (soʻm)</div></div>' +
+        '<div class="stat-card" style="flex:1"><div class="stat-val" style="color:var(--warn)">'+d.at_risk_students+'</div><div class="sub">Xavf ostida</div></div>' +
+      '</div>' +
+      '<div class="row">' +
+        '<div class="card" style="flex:1"><h3>Davomat belgilanmagan guruhlar</h3><table><tr><th>Guruh</th><th>Oʻqituvchi</th></tr>'+missHtml+'</table></div>' +
+        '<div class="card" style="flex:1"><h3>Faol boʻlmagan oʻqituvchilar (14 kun)</h3><table><tr><th>Oʻqituvchi</th><th>Oxirgi hisobot</th></tr>'+inactHtml+'</table></div>' +
+      '</div>' +
+      '<div class="card" style="margin-top:14px"><h3>Zaxira nusxa</h3><p class="sub">Tizim maʼlumotlarini ZIP fayl sifatida yuklab olish. Fayl shaxsiy maʼlumotlarni oʻz ichiga oladi, xavfsiz joyda saqlang.</p><button class="btn" id="btn-backup">Zaxira nusxasini yuklab olish</button></div>';
+      
+      $("#btn-backup").onclick = function(){
+        if(!confirm("Zaxira nusxasi shaxsiy ma'lumotlarni o'z ichiga oladi. Uni xavfsiz joyda saqlaysizmi?")) return;
+        window.open("/api/admin/export?chat=1", "_blank");
+      };
+  }).catch(fail);
+}
+
+// ================== TZ-3: HISOBOTLAR ==================
+function rep(){
+  $("#v").innerHTML = '<div class="card"><h2>Hisobotlar</h2>' +
+    '<div class="row" style="margin-bottom:14px">' +
+      '<label>Turi<select id="rep-type"><option value="payments">Toʻlovlar</option><option value="teachers">Oʻqituvchilar</option><option value="students-progress">Oʻquvchilar progressi</option><option value="debtors">Qarzdorlar</option></select></label>' +
+      '<label>Oy (Toʻlovlar, Oʻqituvchilar, Progress uchun)<input type="month" id="rep-month"></label>' +
+      '<button class="btn" id="rep-load">Koʻrsatish</button>' +
+      '<button class="btn g" id="rep-csv">CSV yuklab olish</button>' +
+    '</div><div id="rep-out" class="sc"></div></div>';
+    
+  var m = new Date();
+  $("#rep-month").value = m.getFullYear() + "-" + (m.getMonth() < 9 ? "0" : "") + (m.getMonth() + 1);
+  
+  $("#rep-load").onclick = function(){
+    var type = $("#rep-type").value;
+    var month = $("#rep-month").value;
+    var url = "/reports/" + type;
+    if(type !== "debtors") url += "?month=" + month;
+    else url += "?upto=" + month;
+    
+    $("#rep-out").innerHTML = "Yuklanmoqda...";
+    api(url).then(function(d){
+      if(type === "payments"){
+        var rows = d.non_voided.map(function(r){ return '<tr><td>'+esc(r.student)+'</td><td>'+esc(r.group)+'</td><td>'+r.amount+'</td><td>'+esc(r.method)+'</td><td>'+esc(r.paid_on)+'</td></tr>'; }).join("");
+        $("#rep-out").innerHTML = '<h3>Toʻlovlar ('+d.month+')</h3><p>Jami: '+d.total+' soʻm</p><table><tr><th>Oʻquvchi</th><th>Guruh</th><th>Summa</th><th>Usul</th><th>Sana</th></tr>'+rows+'</table>';
+      } else if(type === "teachers"){
+        var rows = d.rows.map(function(r){ return '<tr><td>'+esc(r.teacher)+'</td><td>'+r.groups+'</td><td>'+r.lessons+'</td><td>'+r.attendance_days+'</td><td>'+r.tasks+'</td><td>'+r.avg_attendance+'%</td><td>'+r.plans_done+'/'+r.plans_total+'</td></tr>'; }).join("");
+        $("#rep-out").innerHTML = '<h3>Oʻqituvchilar ('+d.month+')</h3><table><tr><th>Oʻqituvchi</th><th>Guruhlar</th><th>Darslar</th><th>Davomat</th><th>Topshiriq</th><th>Oʻrtacha davomat</th><th>Reja</th></tr>'+rows+'</table>';
+      } else if(type === "students-progress"){
+        var rows = d.rows.map(function(r){ return '<tr><td>'+esc(r.student)+'</td><td>'+esc(r.group)+'</td><td>'+r.points_month+'</td><td>'+r.points_total+'</td><td>'+r.attendance_percent+'%</td><td>'+esc(r.last_activity||"—")+'</td><td>'+(r.at_risk ? '<span class="chip c-bad">Xavf</span>' : "")+'</td></tr>'; }).join("");
+        $("#rep-out").innerHTML = '<h3>Progress ('+d.month+')</h3><table><tr><th>Oʻquvchi</th><th>Guruh</th><th>Oylik ball</th><th>Jami ball</th><th>Davomat</th><th>Oxirgi faollik</th><th></th></tr>'+rows+'</table>';
+      } else if(type === "debtors"){
+        var rows = d.rows.map(function(r){ return '<tr><td>'+esc(r.student)+'</td><td>'+esc(r.group)+'</td><td>'+r.fee+'</td><td>'+r.paid+'</td><td>'+r.left+'</td><td>'+esc(r.status)+'</td></tr>'; }).join("");
+        $("#rep-out").innerHTML = '<h3>Qarzdorlar ('+d.month+')</h3><table><tr><th>Oʻquvchi</th><th>Guruh</th><th>Narx</th><th>Toʻlangan</th><th>Qoldiq</th><th>Holat</th></tr>'+rows+'</table>';
+      }
+    }).catch(function(e){ $("#rep-out").innerHTML = '<p style="color:var(--bad)">'+e.message+'</p>'; });
+  };
+  
+  $("#rep-csv").onclick = function(){
+    var type = $("#rep-type").value;
+    var month = $("#rep-month").value;
+    var url = "/api/reports/" + type + "?format=csv";
+    if(type !== "debtors") url += "&month=" + month;
+    else url += "&upto=" + month;
+    
+    fetch(url, { headers: { Authorization: "Bearer " + T } })
+      .then(function(r){ if(!r.ok) throw new Error("CSV xatosi"); return r.blob(); })
+      .then(function(blob){
+        var a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = type + "-" + month + ".csv"; a.click();
+        setTimeout(function(){ URL.revokeObjectURL(a.href); }, 2000);
+      }).catch(function(e){ toast(e.message); });
+  };
+  
+  $("#rep-load").click(); // Auto load first time
+}
+
+// ================== OTHER TABS (STU, STF, GRP, TSK, ANN, ART, CHT, PAY) ==================
 function stu(){api("/admin/students").then(function(L){
  $("#v").innerHTML='<div class="card"><div class="row"><label>FIO<input id="n1" placeholder="Familiya Ism"></label><label>Telefon<input id="n2" placeholder="+998"></label><label>Guruh<select id="n3">'+opts(G,0,"Guruhsiz")+'</select></label><label>Daraja<input id="n4" placeholder="Beginner"></label><button class="btn" id="add">Qoʻshish</button></div><div id="cb">'+(last||"")+'</div></div><div class="card sc"><table><tr><th>Login</th><th>FIO</th><th>Guruh</th><th>Daraja</th><th></th></tr>'+L.map(function(u){return '<tr class="'+(u.active?"":"off")+'"><td>'+esc(u.login)+"</td><td>"+esc(u.full_name)+"</td><td>"+esc(u.group_name)+"</td><td>"+esc(u.level)+'</td><td><button class="btn g" data-rp="'+u.id+'">Yangi parol</button> <button class="btn g" data-ac="'+u.id+'" data-v="'+(u.active?0:1)+'">'+(u.active?"Oʻchirish":"Yoqish")+"</button></td></tr>"}).join("")+(L.length?"":'<tr><td colspan="5" style="color:var(--mute)">Hali oʻquvchi yoʻq. Yuqoridan qoʻshing.</td></tr>')+"</table></div>";
  bindCard();
@@ -156,7 +253,6 @@ function pay(){
     renderPay();
   }).catch(fail);
 }
-
 function renderPay(){
   var s = paySettings;
   var html = '';
