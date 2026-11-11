@@ -45,6 +45,7 @@ class User(Base):
     level: Mapped[str] = mapped_column(String(60), default="")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))  # oshirilsa eski tokenlar yaroqsiz boʻladi
     monthly_fee: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))   # oʻquvchi: individual oylik narx (0 = guruh narxi)
     fee_day: Mapped[int] = mapped_column(Integer, default=10, server_default=text("10"))     # oʻquvchi: har oy toʻlov kuni
     salary_mode: Mapped[str] = mapped_column(String(12), default="per_lesson", server_default=text("'per_lesson'"))  # per_lesson|percent|fixed
